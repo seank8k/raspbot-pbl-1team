@@ -1,0 +1,343 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>라즈봇 1조 조종</title>
+<!-- 지시서: specs/01-webabb.md(Codex 리뷰 반영판) · specs/03-blackbox.md (녹화 상태 표시) · specs/04-line-tracer.md (라인 따라가기) -->
+<style>
+  :root { --bg:#111614; --panel:#1b2320; --line:#2e3a35; --ink:#e6ece9; --muted:#93a39c; --accent:#4cc3a0; --stop:#e5534b; --warn:#f0b45a; }
+  * { box-sizing: border-box; }
+  html, body { margin:0; background:var(--bg); color:var(--ink); font-family: system-ui, "Malgun Gothic", "Apple SD Gothic Neo", sans-serif; }
+  body { padding: 12px max(12px, env(safe-area-inset-left)) 24px max(12px, env(safe-area-inset-right)); }
+  .wrap { max-width: 560px; margin: 0 auto; display: grid; gap: 12px; }
+  header { display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap; }
+  h1 { font-size: 1.1rem; margin:0; }
+  .pill { font-size: .8rem; padding: 3px 10px; border-radius: 999px; background: var(--panel); border:1px solid var(--line); white-space: nowrap; }
+  .pill.on { color: var(--accent); border-color: var(--accent); }
+  .pill.off { color: var(--warn); border-color: var(--warn); }
+  .pill.bad { color: #fff; background: var(--stop); border-color: var(--stop); }
+  .cam { position: relative; width:100%; aspect-ratio: 4/3; background:#000; border-radius:8px; overflow:hidden; display:grid; place-items:center; color:var(--muted); font-size:.9rem; }
+  .cam img { width:100%; height:100%; object-fit:contain; display:block; }
+  .cam .age { position:absolute; top:8px; right:8px; }
+  .msg { min-height: 1.4em; font-size: .9rem; color: var(--warn); text-align:center; }
+  .pad { display:grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+  button { font: inherit; color: var(--ink); background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 18px 6px; font-size: 1rem; touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
+  button small { display:block; color: var(--muted); font-size:.75rem; margin-top:4px; }
+  button.active { background: var(--accent); color: #062018; border-color: var(--accent); }
+  button.active small { color:#062018; }
+  button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .stopbtn { grid-column: 1 / -1; background: var(--stop); border-color: var(--stop); color:#fff; font-weight:700; padding: 16px; }
+  .speed { display:grid; gap:6px; background: var(--panel); border:1px solid var(--line); border-radius:10px; padding: 12px; }
+  .speed label { display:flex; justify-content:space-between; font-size:.9rem; }
+  .speed output { font-variant-numeric: tabular-nums; font-weight:700; color: var(--accent); }
+  input[type=range] { width:100%; accent-color: var(--accent); }
+  .help { font-size:.8rem; color: var(--muted); line-height:1.6; margin:0; }
+  .busy { text-align:center; padding: 32px 12px; display:grid; gap:12px; }
+  .busy b { font-size: 1.2rem; color: var(--warn); }
+  .line { display:grid; gap:6px; }
+  .linebtn { padding: 14px; font-weight:700; }
+  .linebtn.on { background: var(--warn); border-color: var(--warn); color:#1d1404; }
+  .lineinfo { font-size:.85rem; color: var(--muted); text-align:center; font-variant-numeric: tabular-nums; overflow-wrap:anywhere; }
+  .bb { font-size:.8rem; color: var(--muted); text-align:center; overflow-wrap:anywhere; }
+  [hidden] { display:none !important; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>라즈봇 1조 조종</h1>
+    <span class="pill off" id="status">연결 중…</span>
+  </header>
+
+  <section class="busy" id="busy" hidden>
+    <b id="busyMsg">다른 사람이 조종 중입니다</b>
+    <span class="help">그 사람이 나가면 자동으로 들어갑니다.</span>
+    <button class="stopbtn" id="estopBusy" type="button">비상정지</button>
+  </section>
+
+  <main id="main" hidden>
+    <div class="wrap">
+      <div class="cam" id="cam"><span id="camMsg">카메라 화면</span><span class="pill age" id="age" hidden></span></div>
+      <div class="msg" id="msg"></div>
+      <div class="bb" id="bbRow" hidden><span class="pill" id="bb"></span> <span id="bbInfo"></span></div>
+
+      <div class="pad">
+        <button type="button" data-dir="turn_left">⟲ 제자리 왼쪽<small>Q</small></button>
+        <button type="button" data-dir="fwd">▲ 앞<small>W</small></button>
+        <button type="button" data-dir="turn_right">⟳ 제자리 오른쪽<small>E</small></button>
+        <button type="button" data-dir="left">◀ 옆으로 왼쪽<small>A</small></button>
+        <button type="button" data-dir="back">▼ 뒤<small>S</small></button>
+        <button type="button" data-dir="right">▶ 옆으로 오른쪽<small>D</small></button>
+        <button type="button" class="stopbtn" id="stop">정지 (스페이스)</button>
+      </div>
+
+      <div class="line">
+        <button type="button" id="lineBtn" class="linebtn">라인 따라가기</button>
+        <div class="lineinfo" id="lineInfo">꺼짐</div>
+      </div>
+
+      <div class="speed">
+        <label for="speed">속도 <output id="speedOut">120</output></label>
+        <input type="range" id="speed" min="40" max="150" step="10" value="120">
+      </div>
+
+      <p class="help">누르고 있는 동안만 움직입니다. 앞/뒤 + 왼쪽/오른쪽을 같이 누르면 대각선, 왼쪽+오른쪽은 안 움직입니다.
+        키보드 W A S D Q E (한글 입력 상태여도 됨) · 스페이스 = 정지. 화면을 벗어나거나 꺼지면 멈춥니다.</p>
+    </div>
+  </main>
+</div>
+
+<script>
+(() => {
+  const KEYS = { KeyW: "fwd", KeyS: "back", KeyA: "left", KeyD: "right", KeyQ: "turn_left", KeyE: "turn_right" };
+  const $ = id => document.getElementById(id);
+  const statusEl = $("status"), msgEl = $("msg"), ageEl = $("age");
+  const buttons = [...document.querySelectorAll("button[data-dir]")];
+  const speedEl = $("speed");
+
+  let cfg = null, haveSeat = false, mySlot = "";
+  const pressed = new Map();   // 입력 출처("k:KeyW", "p:3") → 방향
+  let press = 0;               // 새로 누를 때마다 +1
+  let seq = 0;                 // 메시지마다 +1 (서버가 순서 거꾸로 온 것을 버림)
+  let beat = null, statusTimer = null, inflight = 0;
+  // 라인 따라가기 (지시서 04)
+  let lineOn = false, linePress = 0, lineTimer = null;
+  const consumed = new Set();  // 라인 중 방향 첫 누름 → 끄기만 · 손 뗄 때까지 무시
+
+  const post = (url, b) => fetch(url, { method: "POST", headers: { "Content-Type": "application/json" },
+                                         body: JSON.stringify(b || {}), credentials: "same-origin", keepalive: true });
+
+  function pill(text, cls) { statusEl.textContent = text; statusEl.className = "pill " + cls; }
+  function say(t) { msgEl.textContent = t || ""; }
+  function keysNow() { return [...new Set(pressed.values())]; }
+  function paint() { const k = new Set(pressed.values()); buttons.forEach(b => b.classList.toggle("active", k.has(b.dataset.dir))); }
+
+  // ---- 자리 ----
+  async function claim() {
+    try {
+      const r = await post("/api/claim");
+      if (r.status === 409) {
+        const d = await r.json().catch(() => ({}));
+        $("busyMsg").textContent = d.reason || "다른 사람이 조종 중입니다";
+        haveSeat = false; $("busy").hidden = false; $("main").hidden = true; pill("대기 중", "off"); setTimeout(claim, 1000); return;
+      }
+      if (!r.ok) throw new Error(r.status);
+      const d = await r.json();
+      mySlot = d.slot_name || "";
+      haveSeat = true; $("busy").hidden = true; $("main").hidden = false;
+      pill(idleText(), "on");
+      startCamera();
+      clearInterval(statusTimer); statusTimer = setInterval(poll, 500);
+    } catch { pill("라즈봇에 연결할 수 없습니다", "bad"); setTimeout(claim, 2000); }
+  }
+
+  async function poll() {
+    try {
+      const r = await fetch("/api/status", { credentials: "same-origin", cache: "no-store" });
+      const s = await r.json();
+      if (r.status === 403) { lost("조종 자리를 잃었습니다"); return; }
+      showState(s);
+    } catch { pill("연결 끊김", "bad"); releaseAll("연결이 끊겨 멈췄습니다 — 다시 누르세요"); }
+  }
+
+  function showState(s) {
+    if (cfg.camera) {
+      ageEl.hidden = false;
+      const a = s.frame_age;
+      ageEl.textContent = a === null ? "영상 없음" : `영상 ${a.toFixed(1)}초 전`;
+      ageEl.className = "pill age " + (a === null || a > cfg.cam_stale ? "bad" : "on");
+    }
+    const bb = s.blackbox;           // 블박 (지시서 03) — 서버 메모리 값만 보여 줌
+    $("bbRow").hidden = !bb;
+    if (bb) {
+      $("bb").textContent = bb.label;
+      $("bb").className = "pill " + (bb.state === "recording" ? "on" : bb.state === "off" || bb.state === "starting" ? "" : "off");
+      $("bbInfo").textContent = (bb.file ? bb.file + " · " : "") + `폴더 ${bb.folder_mb}MB` +
+        (bb.dropped ? ` · 버린 장면 ${bb.dropped}` : "") + (bb.clock_ok ? "" : " · 시각 미확인");
+    }
+    const ln = s.line;
+    if (ln) {
+      const dots = ln.pattern ? [...ln.pattern].map(c => c === "1" ? "●" : "○").join("") : "····";
+      const ob = ln.obstacle || {};
+      const obTxt = ob.mm == null ? "" : ` · 장애물 거리 ${(ob.mm / 10).toFixed(1)}cm`;   // 지시서 05: 라인 중 늘 표시
+      $("lineInfo").textContent = ln.active ? `라인 따라가기 중 · 속도 ${ln.speed} · 센서 ${dots}${obTxt} · ${ln.action}`
+        : `꺼짐 · 센서 ${dots}` + (ln.reason ? ` · 멈춘 이유: ${ln.reason}` : "");
+      $("lineInfo").style.color = ln.active && ob.state === "pause" ? "#d08700" : "";   // 잠깐 멈춤 = 노란 표시
+      if (!ln.available) $("lineBtn").disabled = true;
+    }
+    if (!s.controller) pill("제어부 이상 — 주행 거부", "bad");
+    else if (s.locked) pill("정지 실패 잠금 — 다시 시도 중", "bad");
+    else if (s.moving) pill("움직이는 중: " + s.move + (s.driver_name ? " ← " + s.driver_name : ""), s.driver_name === mySlot ? "on" : "off");
+    else pill(idleText(), "on");
+  }
+  function idleText() { return `조종 중 (${mySlot})` + (cfg.dry ? " · dry(바퀴 안 움직임)" : " · 정지"); }
+
+  function lost(why) {
+    releaseAll(why); haveSeat = false; clearInterval(statusTimer);
+    $("cam").querySelector("img")?.remove(); $("camMsg").hidden = false;
+    claim();
+  }
+
+  function startCamera() {
+    if (!cfg.camera) { $("camMsg").textContent = "카메라 꺼짐 (--no-camera)"; return; }
+    $("cam").querySelector("img")?.remove();
+    const img = new Image();
+    img.alt = "라즈봇 카메라";
+    img.src = "/video?t=" + Date.now();
+    img.onload = () => { $("camMsg").hidden = true; };
+    img.onerror = () => { $("camMsg").hidden = false; $("camMsg").textContent = "카메라 화면을 못 받았습니다"; };
+    $("cam").appendChild(img);
+  }
+
+  // ---- 보내기 ----
+  function send() {
+    if (!haveSeat) return;
+    if (pressed.size === 0) { sendStop(); return; }
+    if (inflight >= 3) return;               // 요청이 쌓이지 않게
+    inflight++;
+    post("/api/move", { seq: ++seq, press, keys: keysNow(), speed: +speedEl.value })
+      .then(async r => {
+        if (r.status === 403) { lost("조종 자리를 잃었습니다"); return; }
+        const s = await r.json().catch(() => ({}));
+        if (!r.ok) { releaseAll(s.reason || "주행 거부"); return; }
+        if (s.blocked_by && pressed.size) releaseAll(`${s.blocked_by}가 먼저 조종 중 — 그쪽이 손을 떼면 다시 누르세요`);
+        else if (s.need_new_press && pressed.size) releaseAll("멈췄습니다 (" + s.reason + ") — 다시 누르세요");
+        else showState(s);
+      })
+      .catch(() => { pill("연결 끊김", "bad"); releaseAll("연결이 끊겨 멈췄습니다 — 다시 누르세요"); })
+      .finally(() => { inflight--; });
+  }
+
+  // all=true: 정지 버튼 · 스페이스 → 다른 기기가 움직이고 있어도 멈춤
+  function sendStop(all) {
+    clearInterval(beat); beat = null;
+    if (!haveSeat) return;
+    post("/api/stop", { seq: ++seq, press, all: !!all })
+      .then(async r => {
+        if (!r.ok) { say("정지 요청이 거부됐습니다 — 비상정지를 누르세요"); pill("정지 거부됨", "bad"); return; }
+        showState(await r.json());
+      })
+      .catch(() => { say("정지 요청을 못 보냈습니다 — 라즈봇은 0.4초 뒤 스스로 멈춥니다"); pill("연결 끊김", "bad"); });
+  }
+
+  // 누르고 있는 것 모두 풀고 정지 (다시 누르기 전까지 안 움직임) — 라인 따라가기도 꺼짐
+  function releaseAll(why, all) {
+    lineStopLocal();
+    pressed.clear(); paint(); say(why);
+    sendStop(all);       // press(지금까지 가장 큰 누름 번호) 로 보내므로 라인 누름 번호도 같이 무효
+  }
+
+  // ---- 라인 따라가기 (지시서 04) ----
+  function paintLine() { $("lineBtn").classList.toggle("on", lineOn); $("lineBtn").textContent = lineOn ? "라인 따라가기 끄기" : "라인 따라가기"; }
+  function lineStart() {
+    if (!haveSeat || lineOn || pressed.size) return;
+    if (!cfg.camera) { say("카메라 없이(--no-camera) 라인 모드는 못 씁니다"); return; }
+    press++; linePress = press; lineOn = true; paintLine(); say("");
+    lineSend();
+    lineTimer = setInterval(lineBeat, (cfg.line_beat || 0.25) * 1000);
+  }
+  function lineBeat() {
+    // 보이는 화면 · 이 창이 앞에 있을 때만 「라인 계속」 — 아니면 끈다
+    if (document.hidden || !document.hasFocus()) { lineStop("창을 벗어나 라인 따라가기를 껐습니다"); return; }
+    lineSend();
+  }
+  function lineSend() {
+    if (!lineOn || inflight >= 3) return;
+    inflight++;
+    post("/api/line", { seq: ++seq, press: linePress, on: true })
+      .then(async r => {
+        if (r.status === 403) { lost("조종 자리를 잃었습니다"); return; }
+        const s = await r.json().catch(() => ({}));
+        if (!r.ok || !s.accepted || s.need_new_press) {
+          lineStopLocal("라인 따라가기 멈춤 — " + ((s.line && s.line.reason) || s.reason || "거부") + " · 다시 켜려면 버튼");
+          if (s.line) showState(s);
+          return;
+        }
+        showState(s);
+      })
+      .catch(() => { pill("연결 끊김", "bad"); lineStopLocal("연결이 끊겨 멈췄습니다 (라즈봇은 1초 뒤 스스로 멈춤)"); })
+      .finally(() => { inflight--; });
+  }
+  function lineStopLocal(why) {
+    if (!lineOn) return false;
+    lineOn = false; clearInterval(lineTimer); lineTimer = null; paintLine();
+    if (why) say(why);
+    return true;
+  }
+  function lineStop(why) {
+    if (lineStopLocal(why) && haveSeat)
+      post("/api/line", { seq: ++seq, press: linePress, on: false }).catch(() => {});
+  }
+  $("lineBtn").addEventListener("pointerdown", e => {
+    e.preventDefault();
+    if (lineOn) lineStop("라인 따라가기를 껐습니다"); else lineStart();
+  });
+
+  function down(src, dir) {
+    if (lineOn) {        // 라인 중 방향 첫 누름 = 끄고 멈추기만 (지시서 04)
+      lineStop("라인 따라가기를 껐습니다 — 수동으로 움직이려면 손을 떼고 다시 누르세요");
+      consumed.add(src);
+      return;
+    }
+    if (consumed.has(src)) return;
+    pressed.set(src, dir); press++; paint(); say("");
+    send();
+    if (!beat) beat = setInterval(send, 100);
+  }
+  function up(src) {
+    if (consumed.delete(src)) return;
+    if (!pressed.delete(src)) return;
+    paint();
+    if (pressed.size === 0) sendStop(); else send();
+  }
+
+  // ---- 화면 버튼 (손가락마다 따로) ----
+  buttons.forEach(b => {
+    b.addEventListener("pointerdown", e => { e.preventDefault(); b.setPointerCapture(e.pointerId); down("p:" + e.pointerId, b.dataset.dir); });
+    const end = e => up("p:" + e.pointerId);
+    b.addEventListener("pointerup", end);
+    b.addEventListener("pointercancel", end);
+    b.addEventListener("lostpointercapture", end);
+    b.addEventListener("contextmenu", e => e.preventDefault());
+  });
+  $("stop").addEventListener("pointerdown", e => { e.preventDefault(); releaseAll("정지 (두 기기 모두)", true); });
+  const estop = () => post("/api/estop").then(r => say(r.ok ? "비상정지를 보냈습니다" : "비상정지 실패")).catch(() => say("비상정지를 못 보냈습니다"));
+  $("estopBusy").addEventListener("pointerdown", e => { e.preventDefault(); estop(); });
+
+  // ---- 키보드 (키 위치 기준 → 한글 입력 상태여도 됨) ----
+  window.addEventListener("keydown", e => {
+    if (e.code === "Space") { e.preventDefault(); if (haveSeat) releaseAll("정지 (두 기기 모두)", true); else estop(); return; }
+    const dir = KEYS[e.code];
+    if (!dir) return;
+    e.preventDefault();
+    if (e.repeat || pressed.has("k:" + e.code)) return;
+    down("k:" + e.code, dir);
+  });
+  window.addEventListener("keyup", e => { if (KEYS[e.code]) up("k:" + e.code); });
+
+  // ---- 화면을 벗어나면 정지 (지시서 결정 6) ----
+  window.addEventListener("blur", () => {
+    if (lineOn) lineStop("창을 벗어나 라인 따라가기를 껐습니다");
+    if (pressed.size) releaseAll("창을 벗어나 멈췄습니다");
+  });
+  document.addEventListener("visibilitychange", () => { if (document.hidden) releaseAll("화면이 꺼져 멈췄습니다"); });
+  window.addEventListener("pagehide", () => {
+    pressed.clear();
+    // sendBeacon 은 text/plain 이어야 막히지 않는다 (서버는 형식과 상관없이 JSON 으로 읽음)
+    navigator.sendBeacon("/api/stop", new Blob([JSON.stringify({ seq: ++seq, press })], { type: "text/plain" }));
+    navigator.sendBeacon("/api/leave", new Blob(["{}"], { type: "text/plain" }));
+  });
+
+  speedEl.addEventListener("input", () => { $("speedOut").textContent = speedEl.value; if (pressed.size) send(); });
+
+  fetch("/api/config").then(r => r.json()).then(c => {
+    cfg = c;
+    speedEl.min = c.speed_min; speedEl.max = c.speed_max; speedEl.value = c.speed_default;
+    $("speedOut").textContent = c.speed_default;
+    claim();
+  }).catch(() => pill("라즈봇에 연결할 수 없습니다", "bad"));
+})();
+</script>
+</body>
+</html>
