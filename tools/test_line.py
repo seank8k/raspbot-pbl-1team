@@ -96,13 +96,26 @@ check("줄 놓침 ②: 뒤로 가지 않음", first_back is None, first_back)
 check("줄 놓침 ③: 약 1.0초에 정지", first_stop is not None and 0.98 <= first_stop <= 1.04, first_stop)
 check("정지 뒤 다시 안 움직임 (가운데 줄을 봐도)", all(f.step("0110", t + i * 0.02)[0] == line.ZERO for i in range(5)))
 
-# 6) 찾는 중 바깥 칸만 깜빡 · 가운데 1번만 → 다시 잡은 것 아님 · 시간 안 지움
+# 6) 찾는 중 바깥 칸만 깜빡 → 다시 잡은 것 아님 · 가운데 1번 → 다시 잡음(2026-11-05 A) · 0.5초 안정 전에 또 놓치면 남은 시간만
 f = line.LineFollower(S)
 _, t = run(f, [("0110", 3), ("1000", 2)])
 t_lost = t
-out, t = run(f, [("0000", 30), ("1000", 2), ("0000", 10), ("0110", 1), ("0000", 80)], t0=t)
-stop_at = next((tt - t_lost for tt, w, n, why in out if why), None)
-check("깜빡임으로 찾기 시간이 새로 시작되지 않음 (약 1.0초에 정지)", stop_at is not None and 0.96 <= stop_at <= 1.06, stop_at)
+out, t = run(f, [("0000", 30), ("1000", 2), ("0000", 10)], t0=t)
+check("깜빡임: 찾는 중 바깥 칸(1000)만 보이면 계속 찾기 (다시 잡은 것 아님)", "찾기" in out[31][2] and "찾기" in out[-1][2], (out[31][2], out[-1][2]))
+out2, t = run(f, [("0110", 1)], t0=t)
+check("A: 찾는 중 가운데 칸 1번 → 바로 따라가기 (앞으로)", out2[0][2] == "앞으로", out2[0][2])
+out3, t = run(f, [("0000", 80)], t0=t)
+stop_at = next((tt - t_lost for tt, w, n, why in out + out2 + out3 if why), None)
+check("깜빡임으로 찾기 시간이 새로 시작되지 않음 (0.5초 안정 전 → 합계 약 1.0초에 정지)", stop_at is not None and 0.96 <= stop_at <= 1.1, stop_at)
+
+# 6-2) 「9」 코스 첫 주행 두 번째 코너에서 실제로 나온 순서 (2026-11-05 서버 기록) — 전에는 여기서 정지
+f = line.LineFollower(80)
+_, t = run(f, [("0110", 5), ("0010", 1), ("0110", 3)])
+out, t = run(f, [("0000", 1), ("0010", 1), ("1110", 1), ("0000", 20)], t0=t)
+check("코너 재현 ①: 0000 → 반시계 찾기", kind(out[0][1]) == "제자리왼", kind(out[0][1]))
+check("코너 재현 ②: 회전 중 가운데 1번(0010) → 다시 잡음", "오른쪽" in out[1][2], out[1][2])
+check("코너 재현 ③: 이어서 1110 → 크게 꺾임 왼쪽 · 그 뒤 0000에도 회전 계속 (정지 아님)",
+      out[2][2].startswith("크게 꺾임") and all(kind(w) == "제자리왼" and why is None for _, w, _, why in out[3:]), out[2][2])
 
 # 7) 가운데 연속 2번 → 다시 잡음 → 0.2초 뒤 또 놓침 → 남은 시간만 씀
 f = line.LineFollower(S)

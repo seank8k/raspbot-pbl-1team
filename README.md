@@ -43,7 +43,7 @@ Yahboom RASPBOT-V2 + Raspberry Pi 5(`raspibot-01`)를 **웹 화면으로 조종�
 | `missions/` | 지시서대로 만든 프로그램 (서로 불러 쓰는 부품이라 파일 이름에 번호를 안 붙임 · 번호 짝은 위 「만든 것」 표 · 조원 결정 2026-11-05) |
 | `tools/` | 점검 프로그램 · 자동 시험 `test_*.py` · 측정 도구 · 드라이버 압축 |
 | `results/` | 측정 결과 `날짜-이름` · 블박 `blackbox/` · 영상 샘플 `videos/` (영상은 레포에 안 올림) |
-| `docs/` | 진행상황 정리 · Codex 리뷰 원문 `reviews/` |
+| `docs/` | 진행상황 정리 (`01-진행상황-2026-11-02.md` · **`02-진행상황-2026-11-05.md`**) · Codex 리뷰 원문 `reviews/` |
 | `models/` | YOLO 모델 (라즈봇에만 있음 · `models/README.md`) |
 | `log.md` | 문제 · 원인 추정 · 시도 · 결과 · 누가 |
 

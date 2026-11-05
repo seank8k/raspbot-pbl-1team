@@ -52,7 +52,7 @@ ZERO_RESEND = 0.5                 # 멈춰 있을 때 0 을 다시 보내는 간
 GUARD_LIMIT = 0.3                 # 제어 스레드 심장 박동이 이만큼 끊기면 감시 스레드가 개입
 STALL_LIMIT = 0.1                 # 한 번 판단하는 데 이보다 오래 걸렸으면 그 판단(옛 정보)으로 움직이지 않음
 CAM_W, CAM_H, CAM_FPS, JPEG_QUALITY = 640, 480, 10, 70
-LINE_SPEED = 80                   # 라인 따라가기 속도 (지시서 04: 60 → 90 → 80 조원 결정 2026-11-04 · 90 충돌 뒤 · 제자리 회전은 line.py 40)
+LINE_SPEED = 60                   # 라인 따라가기 속도 (지시서 04: 60 → 90 → 80 → 60 조원 결정 2026-11-05 · 코너 지나침 뒤 · 제자리 회전은 line.py 40)
 LINE_SPEED_STEP, LINE_SPEED_MAX = 10, 90   # 지시서 08 엄지척: +10 · 최대 90 (Claude 제안)
 GESTURE_PERSON_SKIP = 3.0         # 지시서 08 보: 명령 뒤 사람 멈춤을 쉬는 시간 (Claude 제안)
 ULTRA_LOG_MM = 400                # 라인 중 초음파가 이보다 가까우면 값이 바뀔 때마다 기록 (지시서 05 · 늦은 감지 확인용)
@@ -640,7 +640,7 @@ class Controller:
         key = (slot, s["gen"], s["press"])
         if self.line_key != key:                     # 새로 켬 → 판단을 처음부터 · 켜는 순간 검사
             self.line_key = key
-            self.line_speed = LINE_SPEED             # 라인을 다시 켜면 80으로 (08 엄지척은 달리는 중에만)
+            self.line_speed = LINE_SPEED             # 라인을 다시 켜면 기본(60)으로 (08 엄지척은 달리는 중에만)
             self.follower = LineFollower(self.line_speed)
             self.judge.reset()                       # 장애물 타이머도 처음부터 (#15)
             self.sight.reset()                       # 사람 · STOP 타이머도 처음부터 (06)

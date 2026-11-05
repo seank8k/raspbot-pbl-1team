@@ -111,9 +111,9 @@ fault(vision=[["like", 0.9]])
 t, g = wait_gesture("faster", after=g0)
 fault(vision=[])
 v = call("/api/vision")
-check("5 엄지척 → 「빠르게」 · 라인 속도 90", t is not None and v.get("line_speed") == 90, (t, v.get("line_speed")))
+check("5 엄지척 → 「빠르게」 · 라인 속도 +10 (60 → 70)", t is not None and v.get("line_speed") == 70, (t, v.get("line_speed")))
 time.sleep(0.3)
-check("6 달리는 바퀴 값이 90으로", "90" in str(status().get("move")) or moving(), status().get("move"))
+check("6 달리는 바퀴 값이 70으로", "70" in str(status().get("move")) or moving(), status().get("move"))
 
 # 3) 브이 → 사진
 time.sleep(3.0)
@@ -141,7 +141,7 @@ check("9 주먹 → 바로 멈춤 · 라인 꺼짐", t is not None and not s.get
       (t, s.get("reason")))
 time.sleep(1.5)
 check("10 주먹 뒤엔 다시 눌러야 출발 (저절로 안 움직임)", not moving())
-check("11 라인을 다시 켜면 속도 80으로", True if (line_on() or True) and time.sleep(0.5) is None and call("/api/vision").get("line_speed") == 80 else False,
+check("11 라인을 다시 켜면 속도 60으로", True if (line_on() or True) and time.sleep(0.5) is None and call("/api/vision").get("line_speed") == 60 else False,
       call("/api/vision").get("line_speed"))
 beat_on.clear()
 call("/api/stop", dict(seq=nseq(), press=press, all=True))

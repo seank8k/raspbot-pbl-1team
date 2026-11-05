@@ -156,7 +156,7 @@ class LineFollower:
                 return self._lost(now)                # 0.3초 뒤에도 0000 → 진짜 줄 놓침
 
         elif self.state == "search":
-            if recovered:
+            if pattern in CENTER:                     # 찾는 중에는 가운데 칸 1번이면 다시 잡음 (지시서 04 · 2026-11-05 A)
                 self._to_follow(now)
             else:
                 self.search_used += dt
