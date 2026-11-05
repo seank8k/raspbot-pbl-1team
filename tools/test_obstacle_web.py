@@ -94,6 +94,7 @@ def ob_state(s):
 
 
 r = call("/api/claim", {})
+fault(vision=[])                                  # 06 인식은 「아무것도 없음」으로 고정 (카메라 앞 사람 때문에 멈추지 않게)
 check("자리 잡기", r.get("ok"), r)
 threading.Thread(target=beater, daemon=True).start()
 time.sleep(1.2)                                   # 초음파 준비 1초

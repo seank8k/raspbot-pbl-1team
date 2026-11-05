@@ -37,6 +37,8 @@ from flask import Flask, Response, jsonify, make_response, request, send_from_di
 
 from line import LineFollower, decode as line_decode, encode as line_encode, CENTER as LINE_CENTER   # 지시서 04 판단 부분
 import obstacle as obs                                   # 지시서 05 장애물 판단 부분
+from sight import SightJudge, CONF as SIGHT_CONF         # 지시서 06 사람 · STOP 표지판 멈춤 판단 부분
+from gesture import GestureJudge                         # 지시서 08 손 모양 명령 판단 부분
 
 # ---------------- 지시서에서 정한 값 ----------------
 PORT = 5000
@@ -51,6 +53,8 @@ GUARD_LIMIT = 0.3                 # 제어 스레드 심장 박동이 이만큼 
 STALL_LIMIT = 0.1                 # 한 번 판단하는 데 이보다 오래 걸렸으면 그 판단(옛 정보)으로 움직이지 않음
 CAM_W, CAM_H, CAM_FPS, JPEG_QUALITY = 640, 480, 10, 70
 LINE_SPEED = 80                   # 라인 따라가기 속도 (지시서 04: 60 → 90 → 80 조원 결정 2026-11-04 · 90 충돌 뒤 · 제자리 회전은 line.py 40)
+LINE_SPEED_STEP, LINE_SPEED_MAX = 10, 90   # 지시서 08 엄지척: +10 · 최대 90 (Claude 제안)
+GESTURE_PERSON_SKIP = 3.0         # 지시서 08 보: 명령 뒤 사람 멈춤을 쉬는 시간 (Claude 제안)
 ULTRA_LOG_MM = 400                # 라인 중 초음파가 이보다 가까우면 값이 바뀔 때마다 기록 (지시서 05 · 늦은 감지 확인용)
 LINE_BEAT_TIMEOUT = 1.0           # 「라인 계속」 신호가 이만큼 없으면 정지 (지시서 04)
 SENSOR_LIMIT = 0.05               # 라인센서 읽기가 이보다 오래 걸리면 실패로 봄 (2026-11-03 실측 최대 0.78ms)
@@ -319,6 +323,7 @@ class Vision:
         self.result = None        # dict(t_capture, t_done, ms, items)
         self.error = None
         self.rate = 0.0
+        self.fake = None          # 고장 주입(--dry --fault): 가짜 인식 결과 [(이름, 확신도)] · "stale"
         if enabled:
             threading.Thread(target=self._loop, daemon=True, name="vision").start()
 
@@ -362,15 +367,24 @@ class Vision:
     def status(self):
         if not self.enabled:
             return dict(enabled=False)
+        if self.fake is not None:                 # 깨뜨리는 시험용 — 0.1초마다 「새 결과」로 보이게
+            now = time.monotonic()
+            if self.fake == "stale":
+                return dict(enabled=True, ready=True, error=None, age=5.0, stale=True, ms=0, rate=0.0, items=[],
+                            t_capture=now - 5.0, stop=False)
+            items = [dict(label=l, conf=float(c), box=(0.4, 0.3, 0.2, 0.4), model="fake") for l, c in self.fake]
+            return dict(enabled=True, ready=True, error=None, age=0.05, stale=False, ms=0, rate=10.0, items=items,
+                        t_capture=round(now * 10) / 10, stop=any(d["label"] in ("person", "stop sign") and d["conf"] >= SIGHT_CONF for d in items))
         with self.lock:
             r, err, rate = self.result, self.error, self.rate
         if r is None:
             return dict(enabled=True, ready=False, error=err)
         age = time.monotonic() - r["t_capture"]
         items = r["items"]
-        stop = any(d["label"] in ("person", "stop sign") for d in items)
+        stop = any(d["label"] in ("person", "stop sign") and d["conf"] >= SIGHT_CONF for d in items)   # 멈춤 기준과 같게 (06 · 0.65)
         return dict(enabled=True, ready=True, error=err, age=round(age, 2), stale=age > VISION_STALE,
-                    ms=r["ms"], rate=round(rate, 1), items=items, stop=stop and age <= VISION_STALE)
+                    ms=r["ms"], rate=round(rate, 1), items=items, stop=stop and age <= VISION_STALE,
+                    t_capture=r["t_capture"])
 
 
 vision = Vision(camera.enabled and not args.no_detect)
@@ -533,6 +547,19 @@ estop_flag = threading.Event()
 guard_tripped = threading.Event()   # 감시 스레드가 직접 0 을 보냈음 → 제어부는 「정지」로 다시 맞추고, 다시 눌러야 움직임
 
 
+def save_photo(img):
+    """지시서 08 브이: 사진 1장 → results/photos/ (깃에 안 올림 · 얼굴)"""
+    try:
+        import cv2
+        d = os.path.join(os.path.dirname(HERE), "results", "photos")
+        os.makedirs(d, exist_ok=True)
+        p = os.path.join(d, time.strftime("%Y-%m-%d_%H-%M-%S") + ".jpg")
+        cv2.imwrite(p, img)
+        log(f"사진 저장: {os.path.relpath(p, os.path.dirname(HERE))}")
+    except Exception as e:
+        log(f"!! 사진 저장 실패: {e}")
+
+
 def stop_everyone(why):
     """정지 버튼 · 비상정지 · 창 닫기: 두 자리의 지금까지 누름을 모두 멈춤."""
     for w in wishes.values():
@@ -562,6 +589,8 @@ class Controller:
         self.line_log_pat = None # 기록에 마지막으로 남긴 센서 값 (지시서 04 · 바뀔 때마다 기록 2026-11-04)
         # 지시서 05 장애물 — 라인 따라가기를 켜면 같이 켜짐 (따로 버튼 없음)
         self.judge = obs.ObstacleJudge(on_time=time.monotonic())   # 시작할 때 초음파를 켬 (main)
+        self.sight = SightJudge()  # 지시서 06: 사람 = 보이는 동안 멈춤 · STOP 표지판 = 3초 멈춤 (라인 중에만)
+        self.sight_held = False
         self.obs_view = dict(mm=None, state="꺼짐", left=None)
         self.obs_paused = False  # 이번 주기에 장애물 잠깐 멈춤 중인가 (불빛 · 부저 판단용)
         self.center_seen = 0     # 치워진 뒤 가운데 칸 연속 횟수
@@ -570,6 +599,10 @@ class Controller:
         self.alerts_ok = True    # 알림 쓰기가 0.05초를 넘으면 False → 그 뒤로 화면만
         self.cur_press = None    # 지금 움직이는 누름 번호 (쓰기 직전 다시 확인 · 지시서 05 #3)
         self.ultra_log_mm = None # 기록에 마지막으로 남긴 초음파 값
+        # 지시서 08 손 모양 명령 — 보 출발 · 주먹 멈춤 · 엄지척 빠르게 · 브이 사진
+        self.gesture = GestureJudge()
+        self.gesture_event = None   # 화면에 알릴 마지막 명령 dict(id, cmd, t)
+        self.line_speed = LINE_SPEED
 
     def _live(self, slot, now):
         """이 자리가 지금 움직이고 싶어하는가? (이유, 원하는지) — 끊김 · 영상 멈춤이면 floor 를 올림."""
@@ -607,10 +640,17 @@ class Controller:
         key = (slot, s["gen"], s["press"])
         if self.line_key != key:                     # 새로 켬 → 판단을 처음부터 · 켜는 순간 검사
             self.line_key = key
-            self.follower = LineFollower(LINE_SPEED)
+            self.line_speed = LINE_SPEED             # 라인을 다시 켜면 80으로 (08 엄지척은 달리는 중에만)
+            self.follower = LineFollower(self.line_speed)
             self.judge.reset()                       # 장애물 타이머도 처음부터 (#15)
+            self.sight.reset()                       # 사람 · STOP 타이머도 처음부터 (06)
+            self.sight_held = False
             self.center_seen = 0
             ok, why = self.follower.start(pattern)
+            if ok and vision.enabled:
+                v0 = vision.status()
+                if not v0.get("ready") or v0.get("stale") or v0.get("error"):
+                    ok, why = False, "인식 준비 중 — 잠시 뒤 다시"   # 06: 인식이 안 되는데 출발하지 않음
             if ok:
                 st0, why0, _ = self.judge.update(ukind, umm, now)
                 if st0 == obs.NOT_READY:
@@ -624,7 +664,7 @@ class Controller:
                 self.line_view = dict(pattern=pattern, action="정지", reason=why)
                 log(f"LINE 출발 안 함: {why}")
                 return "정지", ZERO, why
-            log(f"LINE 시작 (속도 {LINE_SPEED} · 센서 {pattern} · 초음파 {umm}mm)")
+            log(f"LINE 시작 (속도 {self.line_speed} · 센서 {pattern} · 초음파 {umm}mm)")
             self.line_log_pat = pattern
         else:
             # ---- 장애물 (지시서 05) ----
@@ -650,6 +690,24 @@ class Controller:
                 self.line_view = dict(pattern=pattern, action="정지", reason=why)
                 log(f"LINE 끝: {why}")
                 return "정지", ZERO, why
+            # ---- 사람 · STOP 표지판 (지시서 06 · 조원 결정 2026-11-05) — 장애물보다 먼저 · 불빛 · 부저는 안 씀 ----
+            hold, swhy, sleft = self.sight.update(vision.status(), now)
+            if hold:
+                if not self.sight_held:
+                    self.sight_held = True
+                    self.follower.pause(now)         # 라인 판단 시간 멈춤 (이미 장애물로 멈춘 중이면 그대로)
+                    log(f"SIGHT 멈춤: {swhy} · 센서 {pattern} · 초음파 {umm}mm")
+                self.center_seen = 0
+                name = swhy + (f" (남은 {sleft:.1f}초)" if sleft is not None else "")
+                self.line_view = dict(pattern=pattern, action=name, reason=None)
+                return "라인: " + name, ZERO, None
+            if self.sight_held:
+                self.sight_held = False
+                if st == obs.RUN:                    # 장애물도 없으면 이어서 · 남아 있으면 아래 장애물 규칙이 이어받음
+                    self.follower.resume(now)
+                    log(f"SIGHT 다시 출발 · 센서 {pattern}")
+                else:
+                    log("SIGHT 풀림 · 장애물 멈춤은 계속")
             if st == obs.PAUSE:
                 if not was_paused:
                     self.follower.pause(now)
@@ -691,8 +749,42 @@ class Controller:
             log(f"LINE 끝: {why}")
         return "라인: " + action, wheels, why
 
+    def _gestures(self, now):
+        """지시서 08: 손 모양 명령 — 조종 화면이 열려 있을 때만. 바퀴는 정지 · 라인 켜기 길로만 움직인다."""
+        if not vision.enabled or seats.current_gen(SLOTS[0]) is None:
+            self.gesture.reset()
+            return
+        cmd = self.gesture.update(vision.status(), now)
+        if cmd is None:
+            return
+        eid = (self.gesture_event or {}).get("id", 0) + 1
+        note = ""
+        if cmd == "stop":                          # 주먹 = 정지 버튼과 같게 (서버가 바로)
+            stop_everyone("손 모양: 주먹(멈춤)")
+        elif cmd == "start":                       # 보 = 라인 켜기 (화면이 버튼을 누른 것처럼 켬) + 3초 사람 멈춤 쉼
+            w = wishes[SLOTS[0]].snapshot()
+            if w["kind"] == "line" and w["press"] > w["floor"]:
+                note = " (이미 라인 중 · 무시)"
+            else:
+                self.sight.skip_person(now + GESTURE_PERSON_SKIP)
+        elif cmd == "faster":                      # 엄지척 = 라인 속도 +10 · 최대 90
+            self.line_speed = min(LINE_SPEED_MAX, self.line_speed + LINE_SPEED_STEP)
+            if self.follower is not None:
+                self.follower.speed = self.line_speed
+            note = f" → 라인 속도 {self.line_speed}"
+        elif cmd == "photo":                       # 브이 = 사진 1장 (저장은 다른 스레드 · 제어를 안 막음)
+            img, _ = camera.latest_raw()
+            if img is not None:
+                threading.Thread(target=save_photo, args=(img,), daemon=True).start()
+        self.gesture_event = dict(id=eid, cmd=cmd, t=now, note=note)
+        log(f"GESTURE {cmd}{note}")
+
     def tick(self):
         now = time.monotonic()
+        try:
+            self._gestures(now)
+        except Exception as e:                   # 손 모양 오류가 제어를 막지 않게
+            log(f"!! 손 모양 처리 오류: {e}")
         want_name, want, why = "정지", ZERO, None
         self.obs_paused = False                      # _line 이 잠깐 멈춤이면 True 로 → 아래 알림(빨간 불)
         line_now = False
@@ -743,6 +835,8 @@ class Controller:
                         self.driver = None
                         self.obs_paused = False
                         self.judge.reset()           # 라인이 꺼지면 장애물 타이머도 지움 (#15)
+                        self.sight.reset()           # 사람 · STOP 타이머도 지움 (06)
+                        self.sight_held = False
                         want_name, want, why = "정지", ZERO, "라인: " + line_why
                     elif want == ZERO:               # 장애물 잠깐 멈춤 (라인 모드는 유지)
                         why = want_name
@@ -926,7 +1020,7 @@ def line_status(slot):
     active = w["kind"] == "line" and w["press"] > w["floor"]
     v = ctl.line_view
     return dict(active=active, pattern=v["pattern"], action=v["action"] if active else "꺼짐",
-                reason=v["reason"] if v["reason"] else (None if active else ctl.reason), speed=LINE_SPEED,
+                reason=v["reason"] if v["reason"] else (None if active else ctl.reason), speed=ctl.line_speed,
                 available=camera.enabled, obstacle=dict(ctl.obs_view))   # 지시서 05: 거리 mm · 상태 · 남은 초
 
 
@@ -950,7 +1044,9 @@ def vision_api():
     slot, gen = seats.touch(request.cookies.get(COOKIE))
     if slot is None:
         return jsonify(ok=False), 403
-    return jsonify(ok=True, **vision.status())
+    e = ctl.gesture_event
+    g = None if e is None else dict(id=e["id"], cmd=e["cmd"], note=e["note"], age=round(time.monotonic() - e["t"], 2))
+    return jsonify(ok=True, gesture=g, line_speed=ctl.line_speed, **vision.status())
 
 
 @app.get("/")
@@ -1112,6 +1208,8 @@ def fault():
         motors.dry_line = None if d["line_pattern"] is None else line_encode(d["line_pattern"])
     if "ultra" in d:                                          # dry 가짜 초음파: mm 숫자 · "fail" · "torn"
         motors.dry_ultra = d["ultra"]
+    if "vision" in d:                                         # 가짜 인식: [["person", 0.8], …] · "stale" · None(진짜로 돌아감)
+        vision.fake = d["vision"]
     motors.sensor_fail_next = int(d.get("sensor_fail", motors.sensor_fail_next))
     motors.sensor_delay_next = float(d.get("sensor_delay", motors.sensor_delay_next))
     if "bb_write_delay" in d and recorder is not None:

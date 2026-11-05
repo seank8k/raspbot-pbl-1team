@@ -204,7 +204,16 @@
                   "like": "엄지척 (빠르게)", "peace": "브이 (사진)", "no_gesture": "그냥 손" };
   const VCOLOR = { "person": "#e5534b", "stop sign": "#ff7b72", "palm": "#4cc3a0", "fist": "#f0b45a",
                    "like": "#58a6ff", "peace": "#d2a8ff", "no_gesture": "#8b949e" };
-  let visionTimer = null;
+  let visionTimer = null, lastGesture = null;
+  const GSAY = { start: "손 모양 보 → 라인 따라가기 출발", stop: "손 모양 주먹 → 멈춤", faster: "손 모양 엄지척 → 빠르게", photo: "손 모양 브이 → 사진 저장" };
+  function onGesture(g) {   // 지시서 08 — 같은 명령은 한 번만 (id)
+    if (!g) return;
+    if (lastGesture === null) { lastGesture = g.id; if (g.age > 1.0) return; }   // 화면을 연 순간의 옛 명령은 무시
+    else if (g.id === lastGesture) return;
+    lastGesture = g.id;
+    if (g.cmd === "start" && !(g.note || "").includes("무시")) lineStart();   // 버튼을 누른 것과 같은 길 (줄 위 · 라인 계속 신호 그대로)
+    say((GSAY[g.cmd] || g.cmd) + (g.note || ""));
+  }
   function startVision() {
     let ov = $("cam").querySelector(".ov");
     if (!ov) { ov = document.createElement("div"); ov.className = "ov"; $("cam").appendChild(ov); }
@@ -222,6 +231,7 @@
     } catch { return; }
     const ov = $("cam").querySelector(".ov"), info = $("visionInfo");
     if (!ov) return;
+    onGesture(v.gesture);
     ov.textContent = "";
     if (!v.enabled) { info.textContent = "인식 꺼짐"; info.className = "vision"; return; }
     if (!v.ready) { info.textContent = v.error ? "인식 오류: " + v.error : "인식 준비 중…"; info.className = "vision bad"; return; }
