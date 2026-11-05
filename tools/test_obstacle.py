@@ -162,5 +162,17 @@ check("옆걸음 ⑥: 바깥 칸은 계속 찾고 · 가운데 칸 보이면 바
 out = crab_run("0010", [("0000", 3), ("1111", 1)])
 check("옆걸음 ⑧: 중간에 1111 → 정지", out[-1][3] is not None and "1111" not in "" and "네 칸" in out[-1][3], out[-1][3])
 
+# 대기 진단은 출발 타이머와 상태를 바꾸지 않아야 한다.
+j, t = ready_judge()
+j.update("ok", 136, t)
+for value, expected in ((200, "이하"), (800, "남은"), (801, "초과"), (1500, "초과")):
+    state, _, left = j.update("ok", value, t + 0.02)
+    before = (j.state, j.clear_since, j.last_ok, j.mm)
+    detail = j.wait_reason("ok", left)
+    check(f"대기 진단 {value}mm: {expected}", state == ob.PAUSE and expected in detail, detail)
+    check(f"대기 진단 {value}mm: 판단 상태 변경 없음", before == (j.state, j.clear_since, j.last_ok, j.mm))
+    t += 0.02
+check("대기 진단: 섞인 읽기 버림 표시", "읽기 버림" in j.wait_reason("torn", None))
+
 print(f"\n결과: {ok_count}/{ok_count + len(fail)} 통과")
 sys.exit(1 if fail else 0)

@@ -1,0 +1,6 @@
+COPIED 10 BACKUP /home/pi/raspbot/results/backups/line-fix-20261105-204654
+tools/test_line.py PASS 결과: 78/78 통과
+tools/test_obstacle.py PASS 결과: 38/38 통과
+tools/test_sight.py PASS 결과: 18/18 통과
+tools/test_gesture.py PASS 결과: 15/15 통과
+tools/test_line_changes_web.py PASS OK

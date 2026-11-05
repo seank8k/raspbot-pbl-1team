@@ -66,8 +66,8 @@ check("켤 때: None 출발 안 함", not f.start(None)[0])
 
 # 3) 16가지 모양 (따라가기 상태 · 직전 동작 = 앞)
 expect = {"0110": "앞", "0100": "왼쪽완만", "0010": "오른쪽완만", "1000": "왼쪽세게", "0001": "오른쪽세게",
-          "1100": "제자리왼", "1110": "제자리왼", "0011": "제자리오", "0111": "제자리오", "1111": "앞",
-          "1001": "앞", "1010": "앞", "0101": "앞", "1011": "앞", "1101": "앞", "0000": "제자리왼"}  # 찾기는 항상 반시계방향 (2026-11-05)
+          "1100": "앞", "1110": "앞", "0011": "앞", "0111": "앞", "1111": "앞",
+          "1001": "앞", "1010": "앞", "0101": "앞", "1011": "앞", "1101": "앞", "0000": "제자리왼"}  # 0000 시험은 마지막 감지가 왼쪽
 for p, k in expect.items():
     f = line.LineFollower(S)
     f.step("0110", 0.0)
@@ -83,7 +83,7 @@ f.step("0110", 0.0)
 w, name, why = f.step("0000", 0.02)
 check("마지막 방향 모름 → 바로 정지", w == line.ZERO and why and "마지막 방향" in why, why)
 
-# 5) 줄 놓침: 회전 1.5초 → 정지 (뒤로 안 감 · 2026-11-04)
+# 5) 줄 놓침: 회전 1.0초 → 정지 (뒤로 안 감 · 2026-11-04)
 f = line.LineFollower(S)
 _, t = run(f, [("0110", 5), ("0001", 3)])             # 마지막 방향 = 오른쪽 (바깥 칸 뒤 → 바로 찾기)
 t_lost = t
@@ -91,7 +91,7 @@ out, t = run(f, [("0000", 120)], t0=t)
 kinds = [(round(tt - t_lost, 2), kind(w), why) for tt, w, _, why in out]
 first_back = next((x[0] for x in kinds if x[1] == "뒤"), None)
 first_stop = next((x[0] for x in kinds if x[2]), None)
-check("줄 놓침 ①: 마지막 방향이 오른쪽이어도 찾기는 반시계(제자리 왼쪽)", kinds[0][1] == "제자리왼", kinds[0])
+check("줄 놓침 ①: 마지막 방향이 오른쪽이면 오른쪽 찾기", kinds[0][1] == "제자리오", kinds[0])
 check("줄 놓침 ②: 뒤로 가지 않음", first_back is None, first_back)
 check("줄 놓침 ③: 약 1.0초에 정지", first_stop is not None and 0.98 <= first_stop <= 1.04, first_stop)
 check("정지 뒤 다시 안 움직임 (가운데 줄을 봐도)", all(f.step("0110", t + i * 0.02)[0] == line.ZERO for i in range(5)))
@@ -112,10 +112,10 @@ check("깜빡임으로 찾기 시간이 새로 시작되지 않음 (0.5초 안�
 f = line.LineFollower(80)
 _, t = run(f, [("0110", 5), ("0010", 1), ("0110", 3)])
 out, t = run(f, [("0000", 1), ("0010", 1), ("1110", 1), ("0000", 20)], t0=t)
-check("코너 재현 ①: 0000 → 반시계 찾기", kind(out[0][1]) == "제자리왼", kind(out[0][1]))
+check("코너 재현 ①: 오른쪽을 마지막으로 본 뒤 0000 → 오른쪽 찾기", kind(out[0][1]) == "제자리오", kind(out[0][1]))
 check("코너 재현 ②: 회전 중 가운데 1번(0010) → 다시 잡음", "오른쪽" in out[1][2], out[1][2])
 check("코너 재현 ③: 이어서 1110 → 크게 꺾임 왼쪽 · 그 뒤 0000에도 회전 계속 (정지 아님)",
-      out[2][2].startswith("크게 꺾임") and all(kind(w) == "제자리왼" and why is None for _, w, _, why in out[3:]), out[2][2])
+      "진입 전진" in out[2][2] and all(kind(w) == "제자리왼" and why is None for _, w, _, why in out[9:]), out[2][2])
 
 # 7) 가운데 연속 2번 → 다시 잡음 → 0.2초 뒤 또 놓침 → 남은 시간만 씀
 f = line.LineFollower(S)
@@ -169,7 +169,8 @@ check("이상한 모양 계속 → 약 0.1초에 정지", stop_at is not None an
 # 12) 크게 꺾임
 f = line.LineFollower(S)
 out, t = run(f, [("0110", 3), ("1100", 10), ("0000", 10), ("0100", 1), ("0110", 2)])
-check("크게 꺾임 1100 → 제자리 왼쪽 · 중간 0000 에도 계속 회전", all(kind(w) == "제자리왼" for _, w, _, _ in out[3:23]))
+check("크게 꺾임 1100 → 진입 전진 뒤 왼쪽 회전 · 중간 0000 에도 계속 회전",
+      out[3][1] == (40, 40, 40, 40) and all(kind(w) == "제자리왼" for _, w, _, _ in out[9:23]))
 check("크게 꺾임 → 가운데 연속 2번에 따라가기", kind(out[-1][1]) == "앞" and not any(x[3] for x in out), out[-1][2])
 f = line.LineFollower(S)
 _, t = run(f, [("0110", 3)])
@@ -177,7 +178,7 @@ t0 = t
 out, t = run(f, [("0011", 5), ("0000", 120)], t0=t)
 first_back = next((tt - t0 for tt, w, n, why in out if kind(w) == "뒤"), None)
 stop_at = next((tt - t0 for tt, w, n, why in out if why), None)
-check("크게 꺾임 1.5초 실패 + 0000 → 뒤로 안 가고 약 1.5초에 정지", first_back is None and stop_at and 1.48 <= stop_at <= 1.56,
+check("진입 0.1초 + 회전 1.5초 실패 → 뒤로 안 가고 약 1.6초에 정지", first_back is None and stop_at and 1.58 <= stop_at <= 1.66,
       (first_back, stop_at))
 f = line.LineFollower(S)
 out, t = run(f, [("0110", 3), ("1100", 5), ("1000", 100)])
@@ -200,7 +201,7 @@ f = line.LineFollower(S)
 _, t = run(f, [("0110", 3), ("0010", 2)])
 t0 = t
 out, t = run(f, [("0000", 120)], t0=t)
-first_spin = next((tt - t0 for tt, w, n, why in out if kind(w) == "제자리왼"), None)
+first_spin = next((tt - t0 for tt, w, n, why in out if kind(w) == "제자리오"), None)
 stop_at = next((tt - t0 for tt, w, n, why in out if why), None)
 check("틈 ④: 0.3초 뒤에도 0000 → 그때부터 회전 찾기", first_spin is not None and 0.28 <= first_spin <= 0.34, first_spin)
 check("틈 ⑤: 회전 1.0초 더 → 약 1.3초에 정지 · 뒤로 없음",
@@ -220,6 +221,8 @@ check("틈 ⑦: 틈 중 센서 실패 → 바로 정지", out[-1][1] == line.ZER
 f = line.LineFollower(60)
 w, _, _ = f.step("0110", 0.0)
 w, _, _ = f.step("0011", 0.02)
+check("코너 진입: 속도 40으로 먼저 전진", w == (40, 40, 40, 40), w)
+w, _, _ = f.step("0000", 0.13)
 check("회전 ①: 크게 꺾임 제자리 회전 = (40, 40, -40, -40) · 직진은 60 그대로", w == (40, 40, -40, -40), w)
 f = line.LineFollower(60)
 run(f, [("0110", 3), ("1000", 2)])
@@ -228,15 +231,17 @@ check("회전 ②: 줄 찾기 회전도 40 · 반시계방향", w == (-40, -40, 
 f = line.LineFollower(30)
 f.step("0110", 0.0)
 w, _, _ = f.step("1100", 0.02)
+check("코너 진입: 라인 속도가 40보다 낮으면 전진도 그 속도", w == (30, 30, 30, 30), w)
+w, _, _ = f.step("0000", 0.13)
 check("회전 ③: 라인 속도가 40보다 낮으면 회전도 그 속도", w == (-30, -30, 30, 30), w)
 f = line.LineFollower(S)
-_, t = run(f, [("0110", 3), ("0011", 5), ("0010", 2)])           # 오른쪽 크게 꺾임 → 다시 잡음
+_, t = run(f, [("0110", 3), ("0011", 10), ("0010", 2)])          # 진입 전진 → 오른쪽 회전 → 다시 잡음
 out, t = run(f, [("0100", 2), ("1000", 1), ("0000", 3)], t0=t)   # 곧바로 줄이 왼쪽 → 놓침
 check("반시계 ①: 줄이 왼쪽으로 사라지면 찾기는 반시계(제자리 왼쪽)", kind(out[-1][1]) == "제자리왼", kind(out[-1][1]))
 f = line.LineFollower(S)
 _, t = run(f, [("0110", 3), ("0001", 2)])
 out, t = run(f, [("0000", 3)], t0=t)
-check("반시계 ②: 줄이 오른쪽으로 사라져도 반시계", kind(out[-1][1]) == "제자리왼", kind(out[-1][1]))
+check("방향 ②: 줄이 오른쪽으로 사라지면 오른쪽 찾기", kind(out[-1][1]) == "제자리오", kind(out[-1][1]))
 f = line.LineFollower(S)
 _, t = run(f, [("0110", 3), ("0100", 2)])
 out, t = run(f, [("0000", 30)], t0=t)
@@ -244,6 +249,31 @@ check("반시계 ③: 칸 사이 틈(왼쪽 세게 0.3초)은 그대로 → 그 
       kind(out[0][1]) == "왼쪽세게" and kind(out[-1][1]) == "제자리왼", (kind(out[0][1]), kind(out[-1][1])))
 
 # 13) 센서 실패
+for corner, spin in (("1110", (-40, -40, 40, 40)), ("0111", (40, 40, -40, -40))):
+    f = line.LineFollower(60)
+    f.step("0110", 0.0)
+    w, _, _ = f.step(corner, 1.0)
+    check(f"코너 {corner}: 감지 순간 진입 전진", w == (40, 40, 40, 40))
+    w, _, _ = f.step("0110", 1.08)
+    check(f"코너 {corner}: 진입 중 가운데를 봐도 0.1초까지 전진", w == (40, 40, 40, 40))
+    w, _, _ = f.step("0110", 1.11)
+    check(f"코너 {corner}: 회전 시작 때 기존 가운데 횟수 초기화", w == spin and f.center_run == 0)
+    w, _, _ = f.step("0110", 1.13)
+    check(f"코너 {corner}: 회전 중 가운데 1번은 계속 회전", w == spin)
+    w, _, _ = f.step("0110", 1.15)
+    check(f"코너 {corner}: 회전 중 가운데 2번에 직진 복귀", w == (60, 60, 60, 60))
+
+f = line.LineFollower(60)
+f.step("1110", 0.0)
+w, _, why = f.step(None, 0.02)
+check("코너 진입 중 센서 실패 → 즉시 네 바퀴 정지", w == line.ZERO and why == "센서 읽기 실패")
+f = line.LineFollower(60)
+f.step("1110", 0.0)
+f.pause(0.04)
+f.resume(5.04)
+w, name, why = f.step("0110", 5.06)
+check("코너 진입 중 대기 뒤 재출발 → 예전 진입·회전은 버림", w == (60, 60, 60, 60) and name == "앞으로" and why is None)
+
 f = line.LineFollower(S)
 f.step("0110", 0.0)
 w, name, why = f.step(None, 0.02)

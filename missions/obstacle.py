@@ -71,6 +71,20 @@ class ObstacleJudge:
     def _why(self):
         return "장애물" + ("" if self.mm is None else f" {self.mm / 10:.1f}cm") + " · 잠깐 멈춤"
 
+    def wait_reason(self, kind, left):
+        """대기 진단용 설명. 출발 판단과 타이머를 바꾸지 않는다 (지시서 05)."""
+        if kind != "ok":
+            return "읽기 버림 · 0.1초 초과 공백이면 치워짐 시간 초기화" if kind == "torn" else "초음파 읽기 실패"
+        if self.mm is None:
+            return "거리값 없음"
+        if self.mm <= CLEAR_MM:
+            return f"거리 {CLEAR_MM}mm 이하 · 치워짐 시간 초기화"
+        if self.mm > MAX_KNOWN:
+            return f"확인 범위 {MAX_KNOWN}mm 초과 · 출발 허락에서 제외"
+        if left is not None:
+            return f"치워짐 확인 · 남은 {max(0.0, left):.2f}초"
+        return "치워짐 확인 대기"
+
     def resumed(self):
         """다시 출발했을 때 — 달림 상태로."""
         self.state, self.clear_since, self.paused_at = RUN, None, None

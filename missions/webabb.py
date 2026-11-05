@@ -53,6 +53,8 @@ GUARD_LIMIT = 0.3                 # 제어 스레드 심장 박동이 이만큼 
 STALL_LIMIT = 0.1                 # 한 번 판단하는 데 이보다 오래 걸렸으면 그 판단(옛 정보)으로 움직이지 않음
 CAM_W, CAM_H, CAM_FPS, JPEG_QUALITY = 640, 480, 10, 70
 LINE_SPEED = 60                   # 라인 따라가기 속도 (지시서 04: 60 → 90 → 80 → 60 조원 결정 2026-11-05 · 코너 지나침 뒤 · 제자리 회전은 line.py 40)
+LINE_CAMERA_TILT = 45             # 조원: 기존25에서 위로20도 · 라인 켤 때마다 정렬
+LINE_CAMERA_SETTLE = 0.5          # tools/servo_center.py와 같은 정렬 대기 · sleep 없이 바퀴0 유지
 LINE_SPEED_STEP, LINE_SPEED_MAX = 10, 90   # 지시서 08 엄지척: +10 · 최대 90 (Claude 제안)
 GESTURE_PERSON_SKIP = 3.0         # 지시서 08 보: 명령 뒤 사람 멈춤을 쉬는 시간 (Claude 제안)
 ULTRA_LOG_MM = 400                # 라인 중 초음파가 이보다 가까우면 값이 바뀔 때마다 기록 (지시서 05 · 늦은 감지 확인용)
@@ -584,6 +586,8 @@ class Controller:
         self.shutting = False
         self.done = threading.Event()
         self.line_key = None     # (자리, 자리 번호, 라인 누름 번호) — 바뀌면 판단을 처음부터
+        self.camera_align_key = None
+        self.camera_align_until = 0.0
         self.follower = None
         self.line_view = dict(pattern=None, action="꺼짐", reason=None)
         self.line_log_pat = None # 기록에 마지막으로 남긴 센서 값 (지시서 04 · 바뀔 때마다 기록 2026-11-04)
@@ -599,6 +603,7 @@ class Controller:
         self.alerts_ok = True    # 알림 쓰기가 0.05초를 넘으면 False → 그 뒤로 화면만
         self.cur_press = None    # 지금 움직이는 누름 번호 (쓰기 직전 다시 확인 · 지시서 05 #3)
         self.ultra_log_mm = None # 기록에 마지막으로 남긴 초음파 값
+        self.obs_log_at = None   # 장애물 대기 진단 기록 시각 (0.2초 간격)
         # 지시서 08 손 모양 명령 — 보 출발 · 주먹 멈춤 · 엄지척 빠르게 · 브이 사진
         self.gesture = GestureJudge()
         self.gesture_event = None   # 화면에 알릴 마지막 명령 dict(id, cmd, t)
@@ -629,6 +634,22 @@ class Controller:
     def _line(self, slot, s, now):
         """라인 따라가기 한 번: 라인센서 읽기 → 초음파 읽기 → 장애물 판단 → 라인 판단.
         (이름, 바퀴 값, 멈춘 이유 또는 None) — 이유가 있으면 라인 모드를 끈다."""
+        key = (slot, s["gen"], s["press"])
+        if self.camera_align_key != key:
+            if not motors.write_reg(0x02, [2, LINE_CAMERA_TILT]):
+                why = "카메라 위아래 정렬 명령 실패"
+                self.line_view = dict(pattern=None, action="정지", reason=why)
+                log(f"LINE 출발 안 함: {why}")
+                return "정지", ZERO, why
+            self.camera_align_key = key
+            self.camera_align_until = now + LINE_CAMERA_SETTLE
+            self.line_key, self.follower = None, None
+            self.line_speed = LINE_SPEED
+            log(f"LINE 카메라: 위아래 {LINE_CAMERA_TILT}도 정렬 명령 · 바퀴0 대기")
+        if now < self.camera_align_until:
+            name = f"카메라 {LINE_CAMERA_TILT}도 정렬 대기"
+            self.line_view = dict(pattern=None, action=name, reason=None)
+            return "라인: " + name, ZERO, None
         t0 = time.monotonic()
         byte = motors.read_line()                    # 잠깐 멈춤 중에도 늘 읽음 (센서 건강 · 지시서 05 #12)
         took = time.monotonic() - t0
@@ -643,6 +664,7 @@ class Controller:
             self.line_speed = LINE_SPEED             # 라인을 다시 켜면 기본(60)으로 (08 엄지척은 달리는 중에만)
             self.follower = LineFollower(self.line_speed)
             self.judge.reset()                       # 장애물 타이머도 처음부터 (#15)
+            self.obs_log_at = None
             self.sight.reset()                       # 사람 · STOP 타이머도 처음부터 (06)
             self.sight_held = False
             self.center_seen = 0
@@ -676,6 +698,9 @@ class Controller:
                 self.ultra_log_mm = umm
             was_paused = self.judge.state == obs.PAUSE
             st, owhy, left = self.judge.update(ukind, umm, now)
+            if st == obs.PAUSE and (self.obs_log_at is None or now - self.obs_log_at >= 0.2):
+                self.obs_log_at = now
+                log(f"OBST 대기: 읽기={ukind} · 거리={umm}mm · 센서={pattern} · {self.judge.wait_reason(ukind, left)}")
             self.obs_view = dict(mm=self.judge.mm, state=st, left=None if left is None else round(left, 1))
             if st in (obs.FAIL, obs.NOT_READY):
                 why = owhy if st == obs.FAIL else "초음파 준비 안 됨"
@@ -735,10 +760,23 @@ class Controller:
                 self.center_seen = 0
                 if pattern == "0000":
                     self.follower.crab_search(now)
+                    if self.follower.state == "stopped":
+                        why = self.follower.reason
+                        self.line_view = dict(pattern=pattern, action="정지", reason=why)
+                        log(f"OBST 재출발 취소: {why}")
+                        log(f"LINE 끝: {why}")
+                        return "정지", ZERO, why
                     log("OBST 다시 출발: 치워짐 1초 · 줄 안 보임 → 옆걸음 찾기 (왼쪽 1cm → 오른쪽 2cm)")
                 else:
                     log(f"OBST 다시 출발: 치워짐 1초 · 센서 {pattern}")
+        corners, armed = self.follower.corner_count, self.follower.finish_armed
         wheels, action, why = self.follower.step(pattern, now)
+        self.line_speed = self.follower.effective_speed
+        if self.follower.corner_count != corners:
+            log(f"LINE 코너 통과: {self.follower.corner_count}/5 · 속도 {self.line_speed}"
+                + (" · 마지막 구간" if self.follower.final_section else ""))
+        if self.follower.finish_armed and not armed:
+            log("LINE 마지막 구간: 가운데 0.3초 확인 · 정지선 감지 준비")
         if pattern != self.line_log_pat:             # 센서 값이 바뀔 때마다 기록 (회전 중 줄이 지나갔는지도 보이게)
             self.line_log_pat = pattern
             log(f"   센서 {pattern} → {action}")
@@ -771,6 +809,7 @@ class Controller:
             self.line_speed = min(LINE_SPEED_MAX, self.line_speed + LINE_SPEED_STEP)
             if self.follower is not None:
                 self.follower.speed = self.line_speed
+                self.line_speed = self.follower.effective_speed
             note = f" → 라인 속도 {self.line_speed}"
         elif cmd == "photo":                       # 브이 = 사진 1장 (저장은 다른 스레드 · 제어를 안 막음)
             img, _ = camera.latest_raw()
@@ -1021,7 +1060,10 @@ def line_status(slot):
     v = ctl.line_view
     return dict(active=active, pattern=v["pattern"], action=v["action"] if active else "꺼짐",
                 reason=v["reason"] if v["reason"] else (None if active else ctl.reason), speed=ctl.line_speed,
-                available=camera.enabled, obstacle=dict(ctl.obs_view))   # 지시서 05: 거리 mm · 상태 · 남은 초
+                available=camera.enabled, obstacle=dict(ctl.obs_view),
+                corners=ctl.follower.corner_count if ctl.follower else 0,
+                final_section=bool(ctl.follower and ctl.follower.final_section),
+                finish_armed=bool(ctl.follower and ctl.follower.finish_armed))
 
 
 def status_json(slot):

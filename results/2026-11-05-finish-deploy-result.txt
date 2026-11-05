@@ -1,0 +1,26 @@
+COPIED 8 BACKUP /home/pi/raspbot/results/backups/finish-fix-20261105-211625
+tools/test_line.py PASS 결과: 78/78 통과
+tools/test_finish_line.py PASS OK
+tools/test_obstacle.py PASS 결과: 38/38 통과
+tools/test_sight.py PASS 결과: 18/18 통과
+tools/test_gesture.py PASS 결과: 15/15 통과
+tools/test_line_changes_web.py PASS OK
+STARTED 1848 /home/pi/raspbot/results/webabb-20261105-211625.log
+HTTP 200
+21:16:28.389  초음파 켬 (1초 뒤 준비 끝)
+21:16:28.392  웹 조종 시작 → http://raspibot-01.local:5000
+ * Serving Flask app 'webabb'
+ * Debug mode: off
+[31m[1mWARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.[0m
+ * Running on all addresses (::)
+ * Running on http://[::1]:5000
+ * Running on http://[2001:2d8:7282:cd2f:9afe:54ff:fe66:a60b]:5000
+[33mPress CTRL+C to quit[0m
+::ffff:127.0.0.1 - - [05/Nov/2026 21:16:28] "GET / HTTP/1.1" 200 -
+21:16:28.738  블박: 새 파일 2026-11-05_21-16-28_21a00_001.avi
+21:16:28.807  인식: yolo26n_320.onnx 불러옴
+21:16:29.078  인식: gestures_yolo26n_320.onnx 불러옴
+21:16:29.079  인식 켬: coco + gesture · 초당 최대 10번 · 화면 표시만 (바퀴 안 씀)
+[ WARN:0@2.021] global cap_gstreamer.cpp:1777 open OpenCV | GStreamer warning: Cannot query video position: status=0, value=-1, duration=-1
+21:16:30.738  카메라 켜짐 640x480 · 최대 10장/초
+
