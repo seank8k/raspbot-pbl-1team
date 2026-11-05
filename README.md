@@ -19,7 +19,9 @@ Yahboom RASPBOT-V2 + Raspberry Pi 5(`raspibot-01`)를 **웹 화면으로 조종�
 | 03 | `specs/03-blackbox.md` | `missions/blackbox.py` | 블박 녹화 (`results/blackbox/` · 3분 파일 · 폴더 2GB 한도) |
 | 04 | `specs/04-line-tracer.md` | `missions/line.py` | 라인 따라가기 (웹 「라인 따라가기」 버튼 · 속도 80 · 제자리 회전 40) |
 | 05 | `specs/05-obstacle-stop.md` | `missions/obstacle.py` | 라인 중 장애물 15cm 안 → 잠깐 멈춤 · 치우면 1초 뒤 재출발 · 줄이 안 보이면 옆걸음으로 찾기 (라인과 같이 켜짐) |
-| 06 · 07 | — | — | YOLO 사람 STOP · 자율주행 합치기 (지시서 쓰기 전) |
+| 06 | `specs/06-person-stop.md` | — | 사람 · STOP 표지판 찾으면 화면에 STOP (YOLO26n · 라즈봇 24장/초 확인 · 만들기 전) |
+| 08 | `specs/08-hand-gesture.md` | `tools/colab/train_gestures.ipynb` (학습) | 손 모양 4가지(보 · 주먹 · 엄지척 · 브이) 알아보기 · HaGRID로 Colab 학습 (학습 · 연결 전) |
+| 07 | — | — | 자율주행 합치기 (지시서 쓰기 전) |
 
 ## before → after (실제 시험)
 | 항목 | before | after |
