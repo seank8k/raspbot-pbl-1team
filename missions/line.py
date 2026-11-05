@@ -13,6 +13,7 @@ BLACK_VALUE = 0
 # ---------------- 지시서 값 (고정 한계는 지시서부터 바꾼다) ----------------
 TURN_SEARCH = 1.0        # 줄 놓침 회전 찾기 = 찾기 합계 최대 (조원 결정 · 1.5 → 0.7 → 1.0초 · 뒤로는 안 감 2026-11-04)
 TURN_SPEED = 40          # 제자리 회전(크게 꺾임 · 줄 찾기) 속도 — 빠르면 줄이 가운데를 지나쳐 못 잡음 (조원 결정 2026-11-04)
+SEARCH_DIR = "L"         # 줄 찾기 회전 방향: 항상 왼쪽(반시계) · 「9」 코스 모서리가 모두 왼쪽 (조원 결정 2026-11-05 · 전에는 "R")
 # 지시서 05 「옆걸음 찾기」: 장애물을 치웠는데 줄이 안 보일 때 (조원 결정 2026-11-04 · 숫자는 Claude 제안)
 CRAB_SPEED = 55                          # 70은 빠름 → 55 (조원 결정 2026-11-04)
 CRAB_STEPS = ((0.3, "L"), (0.6, "R"))    # 항상 왼쪽 ≈1cm → 오른쪽 ≈2cm (속도를 낮춘 만큼 시간을 늘림 · 실물에서 거리 재서 맞춤)
@@ -254,6 +255,6 @@ class LineFollower:
         return self._search_out()
 
     def _search_out(self):
-        if self.search_used < TURN_SEARCH:                # 항상 시계방향(제자리 오른쪽) — 조원 결정 2026-11-04
-            return self._go(self._turn("R"), f"줄 찾기: 시계방향 회전 {self.search_used:.1f}초")
+        if self.search_used < TURN_SEARCH:                # 항상 반시계방향(제자리 왼쪽) — 조원 결정 2026-11-05 (코스 모서리가 모두 왼쪽)
+            return self._go(self._turn(SEARCH_DIR), f"줄 찾기: 반시계방향 회전 {self.search_used:.1f}초")
         return self._stop(f"줄을 못 찾음 (회전 {TURN_SEARCH}초)")

@@ -3,6 +3,7 @@
 #         specs/03-blackbox.md (블랙박스 녹화 — missions/blackbox.py · 2026-11-03)
 #         specs/04-line-tracer.md (라인 따라가기 모드 — 판단은 missions/line.py · 2026-11-03)
 #         specs/05-obstacle-stop.md (장애물 잠깐 멈춤 — 라인 따라가기와 같이 켜짐 · 판단은 missions/obstacle.py · 2026-11-04)
+#         specs/06-person-stop.md · specs/08-hand-gesture.md (인식 결과 화면 표시만 · 바퀴 안 씀 · missions/detect.py · 2026-11-05)
 # 웹 브라우저(노트북 · 휴대폰)에서 버튼 · 키보드로 라즈봇을 조종하고 카메라 화면을 본다.
 #
 # 실행:   python3 missions/webabb.py              (바퀴가 움직임 — 안전 수칙 확인 후)
@@ -85,6 +86,7 @@ WEB_DIR = os.path.join(HERE, "webabb")
 parser = argparse.ArgumentParser()
 parser.add_argument("--dry", action="store_true")
 parser.add_argument("--no-camera", action="store_true")
+parser.add_argument("--no-detect", action="store_true", help="사람 · STOP · 손 모양 인식 끄기 (지시서 06 · 08)")
 parser.add_argument("--fault", action="store_true")
 parser.add_argument("--port", type=int, default=PORT, help="시험할 때 다른 포트로 (기본 5000)")
 # 블박 (지시서 03) — 아래 값은 시험할 때만 바꾼다
@@ -227,6 +229,7 @@ class Camera:
         self.enabled = enabled
         self.frame = None
         self.frame_time = None  # 마지막으로 새 화면을 받은 시각 (monotonic)
+        self.raw, self.raw_time = None, None   # 인식용 최신 원본 장면 1장 + 찍은 시각 (밀린 장면은 덮어씀 · 06 리뷰 #1 · #8)
         self.lock = threading.Lock()
         self.running = enabled
         self.cap = None
@@ -255,6 +258,7 @@ class Camera:
                     if ok2:
                         with self.lock:    # 잠금은 바꿔 끼우는 순간만
                             self.frame, self.frame_time = buf.tobytes(), time.monotonic()
+                            self.raw, self.raw_time = img, t_mono   # 참조만 넘김 (cap.read 가 장면마다 새 배열)
                     if recorder is not None:
                         recorder.submit(img, t_mono, t_wall)   # 잠금 밖 · 넣어 보기만 (꽉 차면 버림)
                 else:
@@ -280,6 +284,10 @@ class Camera:
         with self.lock:
             return self.frame, self.frame_time
 
+    def latest_raw(self):
+        with self.lock:
+            return self.raw, self.raw_time
+
     def close(self):
         self.running = False
         if self.cap is not None:
@@ -296,6 +304,76 @@ if not args.no_camera:
                         folder_limit=int(args.bb_limit_mb * MiB), file_limit=int(args.bb_file_mb * MiB),
                         min_free=int(args.bb_min_free_mb * MiB), size=(CAM_W, CAM_H), log=log)
 camera = Camera(not args.no_camera)
+
+
+# ---------------- 인식 (지시서 06 · 08 — 화면 표시만 · 바퀴에는 안 씀) ----------------
+VISION_HZ = 10            # 초당 최대 인식 횟수 (06 설계 · Claude 제안)
+VISION_STALE = 1.0        # 결과가 이보다 오래되면 화면에 「인식 멈춤」 (표시용 임시 값 · 조원 결정 전)
+
+
+class Vision:
+    def __init__(self, enabled):
+        self.lock = threading.Lock()
+        self.enabled = enabled
+        self.models = []
+        self.result = None        # dict(t_capture, t_done, ms, items)
+        self.error = None
+        self.rate = 0.0
+        if enabled:
+            threading.Thread(target=self._loop, daemon=True, name="vision").start()
+
+    def _loop(self):
+        import detect
+        self.models = detect.load_models(log=log)
+        if not self.models:
+            self.error = "모델 없음 (models/ 확인)"
+            return
+        names = " + ".join(t for t, _ in self.models)
+        log(f"인식 켬: {names} · 초당 최대 {VISION_HZ}번 · 화면 표시만 (바퀴 안 씀)")
+        period, last_t, done = 1.0 / VISION_HZ, None, []
+        while True:
+            t0 = time.monotonic()
+            img, t_cap = camera.latest_raw()
+            if img is None or t_cap == last_t:            # 새 장면이 없으면 같은 장면을 또 보지 않음
+                time.sleep(0.01)
+                continue
+            last_t = t_cap
+            try:
+                items = []
+                for tag, m in self.models:
+                    for d in m.detect(img):
+                        d["model"] = tag
+                        items.append(d)
+                t1 = time.monotonic()
+                done = [t for t in done if t1 - t < 2.0] + [t1]
+                with self.lock:
+                    self.result = dict(t_capture=t_cap, t_done=t1, ms=round((t1 - t0) * 1000), items=items)
+                    self.rate = len(done) / 2.0
+                    self.error = None
+            except Exception as e:
+                if self.error is None:
+                    log(f"!! 인식 오류: {e}")
+                with self.lock:
+                    self.error = str(e)
+            wait = period - (time.monotonic() - t0)
+            if wait > 0:
+                time.sleep(wait)
+
+    def status(self):
+        if not self.enabled:
+            return dict(enabled=False)
+        with self.lock:
+            r, err, rate = self.result, self.error, self.rate
+        if r is None:
+            return dict(enabled=True, ready=False, error=err)
+        age = time.monotonic() - r["t_capture"]
+        items = r["items"]
+        stop = any(d["label"] in ("person", "stop sign") for d in items)
+        return dict(enabled=True, ready=True, error=err, age=round(age, 2), stale=age > VISION_STALE,
+                    ms=r["ms"], rate=round(rate, 1), items=items, stop=stop and age <= VISION_STALE)
+
+
+vision = Vision(camera.enabled and not args.no_detect)
 
 
 # ---------------- 조종 자리 (휴대폰 1 · 컴퓨터 1) ----------------
@@ -866,6 +944,15 @@ def status_json(slot):
     )
 
 
+@app.get("/api/vision")
+def vision_api():
+    # 인식 결과 (지시서 06 · 08 · 화면 표시만) — 조종 자리 주인만 (사람 위치 정보)
+    slot, gen = seats.touch(request.cookies.get(COOKIE))
+    if slot is None:
+        return jsonify(ok=False), 403
+    return jsonify(ok=True, **vision.status())
+
+
 @app.get("/")
 def index():
     return send_from_directory(WEB_DIR, "index.html")
@@ -875,7 +962,7 @@ def index():
 def config():
     return jsonify(speed_default=SPEED_DEFAULT, speed_min=SPEED_MIN, speed_max=SPEED_MAX,
                    dry=args.dry, camera=camera.enabled, cam_stale=CAM_STALE, fault=args.fault,
-                   line_speed=LINE_SPEED, line_beat=0.25)
+                   line_speed=LINE_SPEED, line_beat=0.25, vision=vision.enabled)
 
 
 @app.post("/api/claim")

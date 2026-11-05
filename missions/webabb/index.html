@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
 <title>라즈봇 1조 조종</title>
-<!-- 지시서: specs/01-webabb.md(Codex 리뷰 반영판) · specs/03-blackbox.md (녹화 상태 표시) · specs/04-line-tracer.md (라인 따라가기) -->
+<!-- 지시서: specs/01-webabb.md(Codex 리뷰 반영판) · specs/03-blackbox.md (녹화 상태 표시) · specs/04-line-tracer.md (라인 따라가기) · specs/06-person-stop.md · specs/08-hand-gesture.md (인식 결과 표시만) -->
 <style>
   :root { --bg:#111614; --panel:#1b2320; --line:#2e3a35; --ink:#e6ece9; --muted:#93a39c; --accent:#4cc3a0; --stop:#e5534b; --warn:#f0b45a; }
   * { box-sizing: border-box; }
@@ -40,6 +40,13 @@
   .linebtn.on { background: var(--warn); border-color: var(--warn); color:#1d1404; }
   .lineinfo { font-size:.85rem; color: var(--muted); text-align:center; font-variant-numeric: tabular-nums; overflow-wrap:anywhere; }
   .bb { font-size:.8rem; color: var(--muted); text-align:center; overflow-wrap:anywhere; }
+  /* 인식 결과 (지시서 06 · 08) — 영상 위에 겹침 */
+  .ov { position:absolute; inset:0; pointer-events:none; }
+  .ov .box { position:absolute; border:2px solid; border-radius:4px; }
+  .ov .box span { position:absolute; left:-2px; top:-1.5em; font-size:.75rem; font-weight:700; padding:1px 5px; border-radius:4px; color:#111; white-space:nowrap; }
+  .ov .stopmark { position:absolute; left:8px; top:8px; background:var(--stop); color:#fff; font-weight:800; font-size:1.3rem; padding:4px 12px; border-radius:6px; letter-spacing:.05em; }
+  .vision { font-size:.8rem; color: var(--muted); text-align:center; overflow-wrap:anywhere; }
+  .vision.bad { color: var(--warn); }
   [hidden] { display:none !important; }
 </style>
 </head>
@@ -59,6 +66,7 @@
   <main id="main" hidden>
     <div class="wrap">
       <div class="cam" id="cam"><span id="camMsg">카메라 화면</span><span class="pill age" id="age" hidden></span></div>
+      <div class="vision" id="visionInfo" hidden></div>
       <div class="msg" id="msg"></div>
       <div class="bb" id="bbRow" hidden><span class="pill" id="bb"></span> <span id="bbInfo"></span></div>
 
@@ -188,6 +196,51 @@
     img.onload = () => { $("camMsg").hidden = true; };
     img.onerror = () => { $("camMsg").hidden = false; $("camMsg").textContent = "카메라 화면을 못 받았습니다"; };
     $("cam").appendChild(img);
+    if (cfg.vision) startVision();
+  }
+
+  // ---- 인식 결과 (지시서 06 · 08 · 화면 표시만 — 바퀴에는 안 씀) ----
+  const VNAME = { "person": "사람", "stop sign": "STOP 표지판", "palm": "보 (출발)", "fist": "주먹 (멈춤)",
+                  "like": "엄지척 (빠르게)", "peace": "브이 (사진)", "no_gesture": "그냥 손" };
+  const VCOLOR = { "person": "#e5534b", "stop sign": "#ff7b72", "palm": "#4cc3a0", "fist": "#f0b45a",
+                   "like": "#58a6ff", "peace": "#d2a8ff", "no_gesture": "#8b949e" };
+  let visionTimer = null;
+  function startVision() {
+    let ov = $("cam").querySelector(".ov");
+    if (!ov) { ov = document.createElement("div"); ov.className = "ov"; $("cam").appendChild(ov); }
+    $("visionInfo").hidden = false;
+    clearInterval(visionTimer);
+    visionTimer = setInterval(pollVision, 200);
+  }
+  async function pollVision() {
+    if (!haveSeat) return;
+    let v;
+    try {
+      const r = await fetch("/api/vision", { credentials: "same-origin", cache: "no-store" });
+      if (!r.ok) return;
+      v = await r.json();
+    } catch { return; }
+    const ov = $("cam").querySelector(".ov"), info = $("visionInfo");
+    if (!ov) return;
+    ov.textContent = "";
+    if (!v.enabled) { info.textContent = "인식 꺼짐"; info.className = "vision"; return; }
+    if (!v.ready) { info.textContent = v.error ? "인식 오류: " + v.error : "인식 준비 중…"; info.className = "vision bad"; return; }
+    if (v.stale) { info.textContent = `인식 멈춤 — ${v.age.toFixed(1)}초 전 결과`; info.className = "vision bad"; return; }
+    for (const d of v.items) {
+      const [x, y, w, h] = d.box, c = VCOLOR[d.label] || "#fff";
+      const b = document.createElement("div");
+      b.className = "box";
+      b.style.cssText = `left:${x * 100}%;top:${y * 100}%;width:${w * 100}%;height:${h * 100}%;border-color:${c}`;
+      const t = document.createElement("span");
+      t.style.background = c;
+      t.textContent = `${VNAME[d.label] || d.label} ${d.conf.toFixed(2)}`;
+      b.appendChild(t);
+      ov.appendChild(b);
+    }
+    if (v.stop) { const s = document.createElement("div"); s.className = "stopmark"; s.textContent = "STOP"; ov.appendChild(s); }
+    const found = v.items.map(d => `${VNAME[d.label] || d.label} ${d.conf.toFixed(2)}`).join(" · ") || "찾은 것 없음";
+    info.textContent = `인식: ${found} · ${v.rate.toFixed(1)}번/초 · ${v.ms}ms · ${v.age.toFixed(1)}초 전`;
+    info.className = "vision";
   }
 
   // ---- 보내기 ----

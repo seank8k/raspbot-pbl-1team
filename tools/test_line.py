@@ -67,7 +67,7 @@ check("켤 때: None 출발 안 함", not f.start(None)[0])
 # 3) 16가지 모양 (따라가기 상태 · 직전 동작 = 앞)
 expect = {"0110": "앞", "0100": "왼쪽완만", "0010": "오른쪽완만", "1000": "왼쪽세게", "0001": "오른쪽세게",
           "1100": "제자리왼", "1110": "제자리왼", "0011": "제자리오", "0111": "제자리오", "1111": "앞",
-          "1001": "앞", "1010": "앞", "0101": "앞", "1011": "앞", "1101": "앞", "0000": "제자리오"}  # 찾기는 항상 시계방향
+          "1001": "앞", "1010": "앞", "0101": "앞", "1011": "앞", "1101": "앞", "0000": "제자리왼"}  # 찾기는 항상 반시계방향 (2026-11-05)
 for p, k in expect.items():
     f = line.LineFollower(S)
     f.step("0110", 0.0)
@@ -91,7 +91,7 @@ out, t = run(f, [("0000", 120)], t0=t)
 kinds = [(round(tt - t_lost, 2), kind(w), why) for tt, w, _, why in out]
 first_back = next((x[0] for x in kinds if x[1] == "뒤"), None)
 first_stop = next((x[0] for x in kinds if x[2]), None)
-check("줄 놓침 ①: 처음엔 마지막 방향(오른쪽)으로 제자리 회전", kinds[0][1] == "제자리오", kinds[0])
+check("줄 놓침 ①: 마지막 방향이 오른쪽이어도 찾기는 반시계(제자리 왼쪽)", kinds[0][1] == "제자리왼", kinds[0])
 check("줄 놓침 ②: 뒤로 가지 않음", first_back is None, first_back)
 check("줄 놓침 ③: 약 1.0초에 정지", first_stop is not None and 0.98 <= first_stop <= 1.04, first_stop)
 check("정지 뒤 다시 안 움직임 (가운데 줄을 봐도)", all(f.step("0110", t + i * 0.02)[0] == line.ZERO for i in range(5)))
@@ -187,7 +187,7 @@ f = line.LineFollower(S)
 _, t = run(f, [("0110", 3), ("0010", 2)])
 t0 = t
 out, t = run(f, [("0000", 120)], t0=t)
-first_spin = next((tt - t0 for tt, w, n, why in out if kind(w) == "제자리오"), None)
+first_spin = next((tt - t0 for tt, w, n, why in out if kind(w) == "제자리왼"), None)
 stop_at = next((tt - t0 for tt, w, n, why in out if why), None)
 check("틈 ④: 0.3초 뒤에도 0000 → 그때부터 회전 찾기", first_spin is not None and 0.28 <= first_spin <= 0.34, first_spin)
 check("틈 ⑤: 회전 1.0초 더 → 약 1.3초에 정지 · 뒤로 없음",
@@ -211,7 +211,7 @@ check("회전 ①: 크게 꺾임 제자리 회전 = (40, 40, -40, -40) · 직진
 f = line.LineFollower(60)
 run(f, [("0110", 3), ("1000", 2)])
 w, _, _ = f.step("0000", 0.2)
-check("회전 ②: 줄 찾기 회전도 40 · 시계방향", w == (40, 40, -40, -40), w)
+check("회전 ②: 줄 찾기 회전도 40 · 반시계방향", w == (-40, -40, 40, 40), w)
 f = line.LineFollower(30)
 f.step("0110", 0.0)
 w, _, _ = f.step("1100", 0.02)
@@ -219,16 +219,16 @@ check("회전 ③: 라인 속도가 40보다 낮으면 회전도 그 속도", w 
 f = line.LineFollower(S)
 _, t = run(f, [("0110", 3), ("0011", 5), ("0010", 2)])           # 오른쪽 크게 꺾임 → 다시 잡음
 out, t = run(f, [("0100", 2), ("1000", 1), ("0000", 3)], t0=t)   # 곧바로 줄이 왼쪽 → 놓침
-check("시계방향 ①: 줄이 왼쪽으로 사라져도 찾기는 시계방향(제자리 오른쪽)", kind(out[-1][1]) == "제자리오", kind(out[-1][1]))
+check("반시계 ①: 줄이 왼쪽으로 사라지면 찾기는 반시계(제자리 왼쪽)", kind(out[-1][1]) == "제자리왼", kind(out[-1][1]))
 f = line.LineFollower(S)
 _, t = run(f, [("0110", 3), ("0001", 2)])
 out, t = run(f, [("0000", 3)], t0=t)
-check("시계방향 ②: 줄이 오른쪽으로 사라져도 시계방향", kind(out[-1][1]) == "제자리오", kind(out[-1][1]))
+check("반시계 ②: 줄이 오른쪽으로 사라져도 반시계", kind(out[-1][1]) == "제자리왼", kind(out[-1][1]))
 f = line.LineFollower(S)
 _, t = run(f, [("0110", 3), ("0100", 2)])
 out, t = run(f, [("0000", 30)], t0=t)
-check("시계방향 ③: 칸 사이 틈(왼쪽 세게 0.3초)은 그대로 → 그 뒤 찾기만 시계방향",
-      kind(out[0][1]) == "왼쪽세게" and kind(out[-1][1]) == "제자리오", (kind(out[0][1]), kind(out[-1][1])))
+check("반시계 ③: 칸 사이 틈(왼쪽 세게 0.3초)은 그대로 → 그 뒤 찾기만 반시계",
+      kind(out[0][1]) == "왼쪽세게" and kind(out[-1][1]) == "제자리왼", (kind(out[0][1]), kind(out[-1][1])))
 
 # 13) 센서 실패
 f = line.LineFollower(S)
