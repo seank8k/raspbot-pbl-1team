@@ -12,7 +12,7 @@ BLACK_VALUE = 0
 
 # ---------------- 지시서 값 (고정 한계는 지시서부터 바꾼다) ----------------
 TURN_SEARCH = 1.0        # 줄 놓침 회전 찾기 = 찾기 합계 최대 (조원 결정 · 1.5 → 0.7 → 1.0초 · 뒤로는 안 감 2026-11-04)
-TURN_SPEED = 40          # 제자리 회전(크게 꺾임 · 줄 찾기) 속도 — 빠르면 줄이 가운데를 지나쳐 못 잡음 (조원 결정 2026-11-04)
+TURN_SPEED = 40          # 제자리 회전(크게 꺾임 · 줄 찾기) 속도 — 빠르면 줄이 가운데를 지나쳐 못 잡음 (조원 결정 2026-11-04 · 2026-11-06 35로 바꿨다가 효과 없어 40으로 되돌림)
 # 지시서 05 「옆걸음 찾기」: 장애물을 치웠는데 줄이 안 보일 때 (조원 결정 2026-11-04 · 숫자는 Claude 제안)
 CRAB_SPEED = 55                          # 70은 빠름 → 55 (조원 결정 2026-11-04)
 CRAB_STEPS = ((0.3, "L"), (0.6, "R"))    # 항상 왼쪽 ≈1cm → 오른쪽 ≈2cm (속도를 낮춘 만큼 시간을 늘림 · 실물에서 거리 재서 맞춤)
@@ -21,15 +21,13 @@ GAP_MAX = 0.3            # 칸 사이 틈: 안쪽 칸 바로 뒤 0000 → 그쪽
 PIVOT_MAX = 1.5          # 크게 꺾임 제자리 회전 최대
 PIVOT_ENTRY = 0.1        # 코너 감지 뒤 전진 시간 (2026-11-05 Codex 추천 승인 · 실물 검증 전)
 PIVOT_ENTRY_SPEED = 40   # 전진 뒤 TURN_SPEED로 회전 · 라인 속도보다 높이지 않음
-ALL_BLACK_MAX = 0.3      # 1111 앞으로 최대 (고정 한계 · 조원 결정)
+STOP_LINE_SECONDS = 1.0  # 1111 즉시 정지·최소 대기·연속 확인 (조원 결정 2026-11-06)
 ODD_HOLD = 0.1           # 이상한 모양 직전 동작 유지 최대
 CENTER_CONFIRM = 2       # 가운데 칸이 연속 이만큼 보여야 「다시 잡음」
+CORNER_GUARD = 1.0       # 코너를 마친 뒤 이만큼은 반대쪽 크게 꺾임을 코너로 안 봄 → 그쪽 세게만 (조원 결정 2026-11-06 · 값은 Claude 제안)
 STABLE_RESET = 0.5       # 따라가기로 이만큼 안정적으로 달려야 찾기 1초가 새로 생김
-LOSS_WINDOW, LOSS_MAX = 10.0, 3   # 10초 안에 줄 놓침 3번 → 정지
-FINISH_CORNERS = 5       # 코너 통과 뒤 마지막 구간 (조원 1·2·3 승인 2026-11-05)
-FINISH_SPEED = 40
-FINISH_CENTER_HOLD = 0.3
-FINISH_CONFIRM = 2
+LOSS_WINDOW = 10.0       # 최근 놓침 통계용. 횟수로 정지하지 않음 (조원 결정 2026-11-06)
+SHORT_LOSS = 0.1        # 이번 연속 찾기가 이 안에 끝나면 횟수에서 제외. 안전용 search_used 합계와 별개.
 GENTLE, HARD = 0.5, 0.0  # 완만 / 세게 돌 때 안쪽 바퀴 비율 (바꿔 볼 값)
 
 CENTER = {"0110", "0100", "0010"}
@@ -63,27 +61,21 @@ class LineFollower:
         self.pivot_dir = None
         self.center_run = 0
         self.search_used = 0.0    # 이번 줄 놓침에서 찾기에 쓴 시간 (중간에 잠깐 보여도 안 지움)
+        self.loss_counted = True  # 이번 줄 놓침을 이미 셌나 (찾기 0.1초를 넘으면 셈)
+        self.loss_started = 0.0
         self.follow_since = None
         self.losses = deque()
         self.prev_t = None
         self.out = ZERO
         self.reason = None
-        self.corner_count = 0
-        self.finish_armed = False
-        self.finish_center_since = None
-        self.finish_black_run = 0
-
-    @property
-    def final_section(self):
-        return self.corner_count >= FINISH_CORNERS
-
-    @property
-    def effective_speed(self):
-        return min(self.speed, FINISH_SPEED) if self.final_section else self.speed
+        self.corner_done_at = None   # 마지막으로 코너 회전을 마친 시각 · 방향 (가짜 반대쪽 코너 막기)
+        self.corner_done_dir = None
+        self.mark_started = None       # 최초 1111 뒤 최소 정지 시간
+        self.mark_black_since = None   # 지금 이어지고 있는 1111 연속 시간
 
     # ---------------- 바퀴 값 (왼앞, 왼뒤, 오앞, 오뒤) ----------------
     def _w(self, left, right):
-        s = self.effective_speed
+        s = self.speed
         return (round(s * left), round(s * left), round(s * right), round(s * right))
 
     def _stop(self, why):
@@ -99,7 +91,7 @@ class LineFollower:
         """켜는 순간 검사. (출발 가능?, 이유)"""
         if pattern is None:
             return False, "센서 읽기 실패"
-        if pattern not in CENTER:
+        if pattern not in CENTER and pattern != "1111":
             return False, "줄 위에 올려 주세요 (가운데 칸이 줄 위여야 출발)"
         return True, None
 
@@ -108,48 +100,67 @@ class LineFollower:
         """장애물로 잠깐 멈춤 — 이 시각부터 라인 판단의 시간을 멈춘다."""
         if getattr(self, "paused_at", None) is None:
             self.paused_at = now
-            self.finish_center_since = None
-            self.finish_black_run = 0
 
     def resume(self, now):
         """다시 출발 — 멈춘 시간만큼 시각을 뒤로 민다. 찾기 · 크게 꺾임 · 틈 같은 동작은 버리고,
-        마지막 방향과 줄 놓침 기록(10초 3번)은 남긴다."""
+        마지막 방향과 줄 놓침 통계 기록은 남긴다."""
         p = getattr(self, "paused_at", None)
         if p is None:
             return
         d = max(0.0, now - p)
         self.paused_at = None
         self.losses = type(self.losses)(t + d for t in self.losses)
+        if self.corner_done_at is not None:
+            self.corner_done_at += d          # 멈춘 시간은 코너 직후 1초에 안 넣음
         self.prev_t = now
         self.state, self.search_used, self.follow_since = "follow", 0.0, None
         self.center_run, self.last_pattern, self.gap_dir, self.pivot_dir = 0, None, None, None
-        self.finish_center_since = None
-        self.finish_black_run = 0
 
     def crab_search(self, now):
         """장애물을 치웠는데 줄이 안 보임(0000) → 옆걸음 찾기: 항상 왼쪽 1cm → 오른쪽 2cm (지시서 05 · 줄 놓침 1번으로 셈)."""
-        why = self._count_loss(now)
-        if why:
-            self._stop(why)
-            return
+        self._count_loss(now)                        # 횟수는 통계용. 옆걸음의 시간 제한은 아래에서 유지.
         self.state, self.t_state, self.follow_since = "crab", now, None
 
     def _crab(self, pattern, now):
         if pattern in CENTER:                         # 가운데 칸이 보이면 바로 따라가기
             self._to_follow(now)
             return None
-        if pattern == "1111":
-            return self._stop("옆걸음 찾기 중 네 칸 모두 검음")
         t = now - self.t_state
         for dur, d in CRAB_STEPS:
             if t < dur:
-                s = min(CRAB_SPEED, 150, FINISH_SPEED) if self.final_section else min(CRAB_SPEED, 150)
+                s = min(CRAB_SPEED, 150)
                 return self._go(tuple(s * x for x in CRAB_SIGNS[d]),
                                 f"옆걸음 찾기: {'왼쪽' if d == 'L' else '오른쪽'} {now - self.t_state:.2f}초")
             t -= dur
         return self._stop(f"옆걸음 찾기 {sum(x[0] for x in CRAB_STEPS):.1f}초 동안 줄을 못 찾음")
 
     # ---------------- 0.02초마다 ----------------
+    def check_stop_line(self, pattern, now):
+        """안전 대기 중에도 호출. 활성 상태면 0 출력, 풀렸으면 None → 현재 센서로 재판단."""
+        if self.state == "stopped":
+            return ZERO, "정지", self.reason
+        if pattern == "1111":
+            if self.mark_started is None:
+                self.mark_started = now
+                self.state = "all_black"
+                self.pivot_dir = self.gap_dir = None
+                self.center_run = 0
+            if self.mark_black_since is None:
+                self.mark_black_since = now
+            if now - self.mark_black_since >= STOP_LINE_SECONDS:
+                return self._stop("마지막 정지선: 1111 연속 1초")
+        else:
+            self.mark_black_since = None
+        if self.mark_started is not None:
+            if pattern == "1111" or now - self.mark_started < STOP_LINE_SECONDS:
+                return self._go(ZERO, "정지선 확인: 최소 1초 정지")
+            self.mark_started = None
+            self.last_pattern = None
+            self.center_run = 0
+            self.prev_t = now
+            self._to_follow(now)
+        return None
+
     def step(self, pattern, now):
         dt = 0.0 if self.prev_t is None else max(0.0, now - self.prev_t)
         self.prev_t = now
@@ -157,19 +168,9 @@ class LineFollower:
             return ZERO, "정지", self.reason
         if pattern is None:
             return self._stop("센서 읽기 실패")
-
-        # 마지막 구간의 정지선은 코너 진입·회전·줄 찾기보다 먼저 판단한다.
-        if self.final_section and not self.finish_armed:
-            if self.state == "follow" and pattern in CENTER:
-                if self.finish_center_since is None:
-                    self.finish_center_since = now
-                if now - self.finish_center_since >= FINISH_CENTER_HOLD:
-                    self.finish_armed = True
-            else:
-                self.finish_center_since = None
-        self.finish_black_run = self.finish_black_run + 1 if self.finish_armed and pattern == "1111" else 0
-        if self.finish_black_run >= FINISH_CONFIRM:
-            return self._stop("마지막 구간 정지선 감지 (1111 연속 2번)")
+        marker = self.check_stop_line(pattern, now)
+        if marker is not None:
+            return marker
 
         prev, self.last_pattern = self.last_pattern, pattern
         self.center_run = self.center_run + 1 if pattern in CENTER else 0
@@ -190,10 +191,17 @@ class LineFollower:
                 return self._lost(now)                # 0.3초 뒤에도 0000 → 진짜 줄 놓침
 
         elif self.state == "search":
+            self.search_used += dt                # 회복하는 마지막 간격도 안전용 찾기 합계에 포함
+            if not self.loss_counted and now - self.loss_started > SHORT_LOSS:
+                self.loss_counted = True
+                self._count_loss(self.loss_started)  # 통계만 남기고 찾기 1초 제한으로 실패를 판단
             if pattern in CENTER:                     # 찾는 중에는 가운데 칸 1번이면 다시 잡음 (지시서 04 · 2026-11-05 A)
                 self._to_follow(now)
             else:
-                self.search_used += dt
+                if pattern in BIG_LEFT or pattern == "1000":
+                    self.last_dir = "L"
+                elif pattern in BIG_RIGHT or pattern == "0001":
+                    self.last_dir = "R"            # A: 지금 보인 줄 쪽으로 찾되 시간·횟수는 초기화하지 않음
                 return self._search_out()
 
         elif self.state == "pivot_entry":
@@ -205,20 +213,12 @@ class LineFollower:
 
         elif self.state == "pivot":
             if recovered:
-                self.corner_count += 1
                 self._to_follow(now)
-                self.finish_center_since = now if self.final_section else None
+                self.corner_done_at, self.corner_done_dir = now, self.pivot_dir
             elif now - self.t_state < PIVOT_MAX:
                 return self._go(self._turn(self.pivot_dir), "크게 꺾임: 제자리 " + ("왼쪽" if self.pivot_dir == "L" else "오른쪽"))
             else:
                 return self._stop("크게 꺾임 1.5초 안에 줄을 못 잡음")   # 0000 이어도 뒤로 가지 않고 정지
-
-        elif self.state == "all_black":
-            if pattern == "1111":
-                if now - self.t_state < ALL_BLACK_MAX:
-                    return self._go(self._w(1, 1), "네 칸 모두 검음: 앞으로")
-                return self._stop("네 칸 모두 검음 0.3초")
-            self._to_follow(now)
 
         elif self.state == "odd":
             if pattern in ODD:
@@ -254,13 +254,14 @@ class LineFollower:
             return self._go(self._w(1, HARD), "오른쪽 세게")
         if p in BIG_LEFT or p in BIG_RIGHT:
             d = "L" if p in BIG_LEFT else "R"
+            if (self.corner_done_at is not None and now - self.corner_done_at <= CORNER_GUARD
+                    and self.corner_done_dir is not None and d != self.corner_done_dir):
+                self.last_dir = d                     # 코너 직후 반대쪽 크게 꺾임 = 비스듬히 가로지름 → 코너 아님 · 그쪽 세게만
+                return self._go(self._hard(d), ("왼쪽" if d == "L" else "오른쪽") + " 세게 (코너 직후 반대쪽 · 코너 아님)")
             self.last_dir = self.pivot_dir = d
             self.state, self.t_state = "pivot_entry", now
             self.center_run = 0
             return self._pivot_entry()
-        if p == "1111":
-            self.state, self.t_state = "all_black", now
-            return self._go(self._w(1, 1), "네 칸 모두 검음: 앞으로")
         if p in ODD:
             self.state, self.t_state = "odd", now
             return self._go(self.out, "이상한 모양: 직전 동작 유지")
@@ -277,28 +278,22 @@ class LineFollower:
         return "줄이 칸 사이: " + ("왼쪽" if self.gap_dir == "L" else "오른쪽") + " 세게"
 
     def _turn(self, d):
-        s = min(TURN_SPEED, self.effective_speed)               # 제자리 회전은 라인 속도보다 크지 않게
+        s = min(TURN_SPEED, self.speed)                         # 제자리 회전은 느리게 (라인 속도보다 크지 않게)
         return (-s, -s, s, s) if d == "L" else (s, s, -s, -s)   # 제자리 왼쪽 --++ / 오른쪽 ++--
 
     def _pivot_entry(self):
-        s = min(PIVOT_ENTRY_SPEED, self.effective_speed)
+        s = min(PIVOT_ENTRY_SPEED, self.speed)
         return self._go((s, s, s, s), "크게 꺾임: 진입 전진 0.1초")
 
     def _count_loss(self, now):
         self.losses.append(now)
         while self.losses and now - self.losses[0] > LOSS_WINDOW:
             self.losses.popleft()
-        if len(self.losses) >= LOSS_MAX:
-            return f"{LOSS_WINDOW:.0f}초 안에 줄 놓침 {LOSS_MAX}번"
-        return None
 
     def _lost(self, now):
         if self.last_dir is None:
             return self._stop("줄이 안 보입니다 (마지막 방향 모름)")
-        if self.search_used == 0.0:                   # 새 줄 놓침 (앞의 것을 이어 쓰는 중이 아니면)
-            why = self._count_loss(now)
-            if why:
-                return self._stop(why)
+        self.loss_counted, self.loss_started = False, now   # 새 연속 찾기. 안전용 search_used 합계는 유지.
         self.state, self.follow_since = "search", None
         return self._search_out()
 

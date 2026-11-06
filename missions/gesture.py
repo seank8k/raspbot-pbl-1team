@@ -9,7 +9,9 @@ COMMANDS = {"palm": "start", "fist": "stop", "like": "faster", "peace": "photo"}
 
 
 class GestureJudge:
-    def __init__(self):
+    def __init__(self, start_stop_only=False):
+        self.start_stop_only = start_stop_only
+        self.commands = {"palm": "start", "fist": "stop"} if start_stop_only else COMMANDS
         self.reset()
 
     def reset(self):
@@ -17,6 +19,7 @@ class GestureJudge:
         self.cand, self.run = None, 0
         self.quiet_until = None
         self.need_release = False   # 명령한 손을 내릴 때까지는 같은 손 모양으로 또 명령 안 함
+        self.last_command = None
 
     def update(self, v, now):
         """v: webabb Vision.status(). 돌려줌: 명령("start"·"stop"·"faster"·"photo") 또는 None"""
@@ -27,7 +30,7 @@ class GestureJudge:
         if cap == self.last_capture:
             return None                                    # 새 인식 결과일 때만 센다
         self.last_capture = cap
-        hands = [d for d in v.get("items", []) if d["label"] in COMMANDS and d["conf"] >= CONF]
+        hands = [d for d in v.get("items", []) if d["label"] in self.commands and d["conf"] >= CONF]
         top = max(hands, key=lambda d: d["conf"])["label"] if hands else None
         if top is None:
             self.need_release = False
@@ -36,11 +39,13 @@ class GestureJudge:
         if top is None:
             return None
         self.run += 1
-        if self.run < CONFIRM or self.need_release:
+        urgent_stop = self.start_stop_only and top == "fist" and self.last_command != "stop"
+        if self.run < CONFIRM or (self.need_release and not urgent_stop):
             return None
-        if self.quiet_until is not None and now < self.quiet_until:
+        if self.quiet_until is not None and now < self.quiet_until and not urgent_stop:
             return None
         self.quiet_until = now + COOLDOWN
         self.need_release = True
         self.run = 0
-        return COMMANDS[top]
+        self.last_command = self.commands[top]
+        return self.last_command

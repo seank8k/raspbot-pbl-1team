@@ -49,12 +49,11 @@ CAM_STALE = 0.8                   # 새 카메라 화면이 이만큼 없으면 
 OWNER_TIMEOUT = 3.0               # 조종하던 화면이 이만큼 조용하면 자리 비움
 TICK = 0.02                       # 제어 주기 (초)
 ZERO_RESEND = 0.5                 # 멈춰 있을 때 0 을 다시 보내는 간격
+RAMP_STEP = 12                    # 바퀴 값을 올릴 때 제어 주기마다 최대 이만큼 (0 → 120 약 0.2초 · 지시서 01 · 조원 결정 2026-11-06 · 값은 Claude 제안)
 GUARD_LIMIT = 0.3                 # 제어 스레드 심장 박동이 이만큼 끊기면 감시 스레드가 개입
 STALL_LIMIT = 0.1                 # 한 번 판단하는 데 이보다 오래 걸렸으면 그 판단(옛 정보)으로 움직이지 않음
 CAM_W, CAM_H, CAM_FPS, JPEG_QUALITY = 640, 480, 10, 70
 LINE_SPEED = 60                   # 라인 따라가기 속도 (지시서 04: 60 → 90 → 80 → 60 조원 결정 2026-11-05 · 코너 지나침 뒤 · 제자리 회전은 line.py 40)
-LINE_CAMERA_TILT = 45             # 조원: 기존25에서 위로20도 · 라인 켤 때마다 정렬
-LINE_CAMERA_SETTLE = 0.5          # tools/servo_center.py와 같은 정렬 대기 · sleep 없이 바퀴0 유지
 LINE_SPEED_STEP, LINE_SPEED_MAX = 10, 90   # 지시서 08 엄지척: +10 · 최대 90 (Claude 제안)
 GESTURE_PERSON_SKIP = 3.0         # 지시서 08 보: 명령 뒤 사람 멈춤을 쉬는 시간 (Claude 제안)
 ULTRA_LOG_MM = 400                # 라인 중 초음파가 이보다 가까우면 값이 바뀔 때마다 기록 (지시서 05 · 늦은 감지 확인용)
@@ -93,6 +92,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--dry", action="store_true")
 parser.add_argument("--no-camera", action="store_true")
 parser.add_argument("--no-detect", action="store_true", help="사람 · STOP · 손 모양 인식 끄기 (지시서 06 · 08)")
+parser.add_argument("--gesture-start-stop-only", action="store_true", help="손 모양은 보 출발·주먹 정지만 (지시서 08)")
 parser.add_argument("--fault", action="store_true")
 parser.add_argument("--port", type=int, default=PORT, help="시험할 때 다른 포트로 (기본 5000)")
 # 블박 (지시서 03) — 아래 값은 시험할 때만 바꾼다
@@ -335,8 +335,12 @@ class Vision:
         if not self.models:
             self.error = "모델 없음 (models/ 확인)"
             return
+        if args.gesture_start_stop_only and {tag for tag, _ in self.models} != {"coco", "gesture"}:
+            self.error = "사람·STOP 및 손 모양 모델 두 개가 모두 필요함"
+            log("!! 인식: " + self.error)
+            return
         names = " + ".join(t for t, _ in self.models)
-        log(f"인식 켬: {names} · 초당 최대 {VISION_HZ}번 · 화면 표시만 (바퀴 안 씀)")
+        log(f"인식 켬: {names} · 초당 최대 {VISION_HZ}번 · 라인 정지/재출발 및 손 모양 명령")
         period, last_t, done = 1.0 / VISION_HZ, None, []
         while True:
             t0 = time.monotonic()
@@ -570,10 +574,29 @@ def stop_everyone(why):
     ctl.estop_reason = why
 
 
+def ramp(cur, want, *, straight=False):
+    """바퀴마다: 값을 올릴 때만 RAMP_STEP 씩 · 줄이기 · 0 · 방향 바뀜(0 거침)은 바로. cur 이 None(모름)이면 0 에서 시작."""
+    if want == ZERO:
+        return ZERO
+    cur = cur or ZERO
+    out = []
+    for c, w in zip(cur, want):
+        if w == 0 or abs(w) <= abs(c) and (c > 0) == (w > 0):
+            out.append(w)                            # 멈춤 · 줄이기 (같은 방향) → 바로
+        else:
+            base = c if (c > 0) == (w > 0) and c != 0 else 0   # 방향이 바뀌면 0 에서 다시
+            step = min(abs(w), abs(base) + RAMP_STEP)
+            out.append(step if w > 0 else -step)
+    if straight and want[0] > 0 and len(set(want)) == 1:
+        return (min(out),) * 4                       # 라인 직진은 좌우 가속 차이로 꺾이지 않게 맞춤
+    return tuple(out)
+
+
 # ---------------- 제어 스레드 (바퀴에 쓰는 유일한 곳) ----------------
 class Controller:
     def __init__(self):
-        self.out = ZERO          # 마지막으로 성공적으로 쓴 값
+        self.out = ZERO          # 마지막으로 성공적으로 쓴 값 (서서히 올리는 중이면 중간 값)
+        self.out_want = ZERO     # 마지막으로 원한 값 (로그용 · 서서히 올리기와 상관없이)
         self.out_name = "정지"
         self.driver = None       # 지금 움직이고 있는 자리 ("phone" / "computer" / None)
         self.locked = False      # 정지 실패 → 주행 잠금
@@ -586,8 +609,6 @@ class Controller:
         self.shutting = False
         self.done = threading.Event()
         self.line_key = None     # (자리, 자리 번호, 라인 누름 번호) — 바뀌면 판단을 처음부터
-        self.camera_align_key = None
-        self.camera_align_until = 0.0
         self.follower = None
         self.line_view = dict(pattern=None, action="꺼짐", reason=None)
         self.line_log_pat = None # 기록에 마지막으로 남긴 센서 값 (지시서 04 · 바뀔 때마다 기록 2026-11-04)
@@ -605,7 +626,7 @@ class Controller:
         self.ultra_log_mm = None # 기록에 마지막으로 남긴 초음파 값
         self.obs_log_at = None   # 장애물 대기 진단 기록 시각 (0.2초 간격)
         # 지시서 08 손 모양 명령 — 보 출발 · 주먹 멈춤 · 엄지척 빠르게 · 브이 사진
-        self.gesture = GestureJudge()
+        self.gesture = GestureJudge(start_stop_only=args.gesture_start_stop_only)
         self.gesture_event = None   # 화면에 알릴 마지막 명령 dict(id, cmd, t)
         self.line_speed = LINE_SPEED
 
@@ -634,22 +655,6 @@ class Controller:
     def _line(self, slot, s, now):
         """라인 따라가기 한 번: 라인센서 읽기 → 초음파 읽기 → 장애물 판단 → 라인 판단.
         (이름, 바퀴 값, 멈춘 이유 또는 None) — 이유가 있으면 라인 모드를 끈다."""
-        key = (slot, s["gen"], s["press"])
-        if self.camera_align_key != key:
-            if not motors.write_reg(0x02, [2, LINE_CAMERA_TILT]):
-                why = "카메라 위아래 정렬 명령 실패"
-                self.line_view = dict(pattern=None, action="정지", reason=why)
-                log(f"LINE 출발 안 함: {why}")
-                return "정지", ZERO, why
-            self.camera_align_key = key
-            self.camera_align_until = now + LINE_CAMERA_SETTLE
-            self.line_key, self.follower = None, None
-            self.line_speed = LINE_SPEED
-            log(f"LINE 카메라: 위아래 {LINE_CAMERA_TILT}도 정렬 명령 · 바퀴0 대기")
-        if now < self.camera_align_until:
-            name = f"카메라 {LINE_CAMERA_TILT}도 정렬 대기"
-            self.line_view = dict(pattern=None, action=name, reason=None)
-            return "라인: " + name, ZERO, None
         t0 = time.monotonic()
         byte = motors.read_line()                    # 잠깐 멈춤 중에도 늘 읽음 (센서 건강 · 지시서 05 #12)
         took = time.monotonic() - t0
@@ -715,6 +720,18 @@ class Controller:
                 self.line_view = dict(pattern=pattern, action="정지", reason=why)
                 log(f"LINE 끝: {why}")
                 return "정지", ZERO, why
+            # 정지선 확인은 코너·찾기뿐 아니라 사람/장애물 대기 중에도 센서를 읽어 진행한다.
+            marker = self.follower.check_stop_line(pattern, now)
+            if marker is not None:
+                wheels, action, why = marker
+                self.obs_paused = st == obs.PAUSE
+                if pattern != self.line_log_pat or why:
+                    self.line_log_pat = pattern
+                    log(f"   센서 {pattern} → {action}")
+                self.line_view = dict(pattern=pattern, action=action, reason=why)
+                if why:
+                    log(f"LINE 끝: {why}")
+                return "라인: " + action, wheels, why
             # ---- 사람 · STOP 표지판 (지시서 06 · 조원 결정 2026-11-05) — 장애물보다 먼저 · 불빛 · 부저는 안 씀 ----
             hold, swhy, sleft = self.sight.update(vision.status(), now)
             if hold:
@@ -743,13 +760,7 @@ class Controller:
                 self.line_view = dict(pattern=pattern, action=name, reason=None)
                 return "라인: " + name, ZERO, None
             if st == obs.CLEAR:
-                # 지시서 05 B (2026-11-04): 가운데 → 연속 2번 확인 · 0000 → 04 찾기 · 1111 → 끔 · 그 밖 → 04 따라가기
-                if pattern == "1111":
-                    self.judge.reset()
-                    why = "장애물 치움 · 네 칸 모두 검음(들림 · 가림) → 출발 안 함"
-                    self.line_view = dict(pattern=pattern, action="정지", reason=why)
-                    log(f"LINE 끝: {why}")
-                    return "정지", ZERO, why
+                # 가운데 → 연속 2번 확인 · 0000 → 04 찾기. 1111은 위 정지선 확인에서 처리.
                 if pattern in LINE_CENTER:
                     self.center_seen += 1
                     if self.center_seen < RESTART_CONFIRM:
@@ -760,23 +771,10 @@ class Controller:
                 self.center_seen = 0
                 if pattern == "0000":
                     self.follower.crab_search(now)
-                    if self.follower.state == "stopped":
-                        why = self.follower.reason
-                        self.line_view = dict(pattern=pattern, action="정지", reason=why)
-                        log(f"OBST 재출발 취소: {why}")
-                        log(f"LINE 끝: {why}")
-                        return "정지", ZERO, why
                     log("OBST 다시 출발: 치워짐 1초 · 줄 안 보임 → 옆걸음 찾기 (왼쪽 1cm → 오른쪽 2cm)")
                 else:
                     log(f"OBST 다시 출발: 치워짐 1초 · 센서 {pattern}")
-        corners, armed = self.follower.corner_count, self.follower.finish_armed
         wheels, action, why = self.follower.step(pattern, now)
-        self.line_speed = self.follower.effective_speed
-        if self.follower.corner_count != corners:
-            log(f"LINE 코너 통과: {self.follower.corner_count}/5 · 속도 {self.line_speed}"
-                + (" · 마지막 구간" if self.follower.final_section else ""))
-        if self.follower.finish_armed and not armed:
-            log("LINE 마지막 구간: 가운데 0.3초 확인 · 정지선 감지 준비")
         if pattern != self.line_log_pat:             # 센서 값이 바뀔 때마다 기록 (회전 중 줄이 지나갔는지도 보이게)
             self.line_log_pat = pattern
             log(f"   센서 {pattern} → {action}")
@@ -809,7 +807,6 @@ class Controller:
             self.line_speed = min(LINE_SPEED_MAX, self.line_speed + LINE_SPEED_STEP)
             if self.follower is not None:
                 self.follower.speed = self.line_speed
-                self.line_speed = self.follower.effective_speed
             note = f" → 라인 속도 {self.line_speed}"
         elif cmd == "photo":                       # 브이 = 사진 1장 (저장은 다른 스레드 · 제어를 안 막음)
             img, _ = camera.latest_raw()
@@ -902,9 +899,10 @@ class Controller:
         if why and want == ZERO:
             self.reason = why
 
-        need_write = want != self.out or (want == ZERO and now - self.last_zero >= ZERO_RESEND)
+        cmd = ramp(self.out, want, straight=line_now) # 라인 직진은 네 바퀴 같은 값 · 나머지는 바퀴별 가속
+        need_write = cmd != self.out or (cmd == ZERO and now - self.last_zero >= ZERO_RESEND)
         if need_write:
-            failed = motors.write(want)
+            failed = motors.write(cmd)
             if failed:
                 self.locked = True
                 if want == ZERO:
@@ -918,17 +916,17 @@ class Controller:
                         self.out, self.out_name, self.last_zero = ZERO, "정지", time.monotonic()
                 return
             done = time.monotonic()
-            if want == ZERO:
+            if cmd == ZERO:
                 self.last_zero = done
                 if self.locked:
                     log("   정지 다시 시도 성공 → 잠금 풂 (다시 눌러야 움직임)")
                     self.locked = False
-            if want != self.out:
+            if want != self.out_want or (want == ZERO and self.out != ZERO):
                 if want == ZERO:
                     log(f"STOP  ({self.reason}) · 정지 명령 완료 {done - now:.3f}초")
                 else:
-                    log(f"DRIVE {want_name} {want}  ← {SLOT_NAME[self.driver]}" + ("   [dry]" if args.dry else ""))
-            self.out, self.out_name = want, want_name
+                    log(f"DRIVE {want_name} {want}  ← {SLOT_NAME[self.driver]} · 실제 쓰기 {cmd}" + ("   [dry]" if args.dry else ""))
+            self.out, self.out_name, self.out_want = cmd, want_name, want
         self._alerts()                               # 바퀴를 먼저 쓴 뒤에 불빛 · 부저 (지시서 05 #16)
 
     def _alerts(self):
@@ -1060,10 +1058,7 @@ def line_status(slot):
     v = ctl.line_view
     return dict(active=active, pattern=v["pattern"], action=v["action"] if active else "꺼짐",
                 reason=v["reason"] if v["reason"] else (None if active else ctl.reason), speed=ctl.line_speed,
-                available=camera.enabled, obstacle=dict(ctl.obs_view),
-                corners=ctl.follower.corner_count if ctl.follower else 0,
-                final_section=bool(ctl.follower and ctl.follower.final_section),
-                finish_armed=bool(ctl.follower and ctl.follower.finish_armed))
+                available=camera.enabled, obstacle=dict(ctl.obs_view))   # 지시서 05: 거리 mm · 상태 · 남은 초
 
 
 def status_json(slot):
@@ -1100,7 +1095,8 @@ def index():
 def config():
     return jsonify(speed_default=SPEED_DEFAULT, speed_min=SPEED_MIN, speed_max=SPEED_MAX,
                    dry=args.dry, camera=camera.enabled, cam_stale=CAM_STALE, fault=args.fault,
-                   line_speed=LINE_SPEED, line_beat=0.25, vision=vision.enabled)
+                   line_speed=LINE_SPEED, line_beat=0.25, vision=vision.enabled,
+                   gesture_start_stop_only=args.gesture_start_stop_only)
 
 
 @app.post("/api/claim")

@@ -164,7 +164,7 @@ t, s = wait_for(lambda s: not ln(s).get("active"), 2.0)
 check("7 (B) 옆걸음 1.0초 동안 못 찾으면 정지 · 라인 꺼짐", t is not None and "줄을 못 찾음" in str(ln(s).get("reason")), ln(s).get("reason"))
 line_off()
 
-# 7-2) 치웠을 때 1111(들림 · 가림) → 라인 끔
+# 7-2) 장애물 대기 중 1111 연속 1초 → 마지막 정지선으로 라인 종료
 fault(line_pattern="0110", ultra=600)
 line_on()
 wait_for(lambda s: s.get("moving"), 1.0)
@@ -175,7 +175,7 @@ time.sleep(0.2)
 fault(ultra=600)
 t, s = wait_for(lambda s: not ln(s).get("active"), 2.0)
 time.sleep(0.3)
-check("7-2 (B) 치웠는데 1111 → 출발 안 함 · 라인 꺼짐", t is not None and not status().get("moving") and "1111" not in "" and "들림" in str(ln(s).get("reason")),
+check("7-2 (B) 대기 중 1111 연속 1초 → 마지막 정지선 · 라인 꺼짐", t is not None and not status().get("moving") and "마지막 정지선" in str(ln(s).get("reason")),
       ln(s).get("reason"))
 line_off()
 
@@ -254,6 +254,23 @@ while time.monotonic() - t0 < 0.6:
 call("/api/stop", dict(seq=nseq(), press=mp))
 check("12 수동 앞으로는 장애물이 있어도 움직임 (조원 결정)", moved)
 time.sleep(0.3)
+
+# 실제 기록: 119mm로 정지한 뒤 1292mm 이상이 되어도 800mm 상한 때문에 재출발하지 못했음.
+fault(line_pattern="0110", ultra=600)
+line_on()
+wait_for(lambda s: s.get("moving"), 1.0)
+fault(ultra=119)
+wait_for(lambda s: not s.get("moving"), 1.0)
+fault(ultra=1292)
+t, s = wait_for(lambda s: s.get("moving"), 2.0)
+check("12 물건 치운 뒤1292mm가1초 계속 → 라인 재출발", t is not None and .9 <= t <= 1.5, t)
+fault(ultra=119)
+wait_for(lambda s: not s.get("moving"), 1.0)
+fault(ultra=5001)
+time.sleep(1.2)
+s = status()
+check("13 5000mm초과는 치워짐에서 제외 · 계속 정지", not s.get("moving") and ln(s).get("active"))
+line_off()
 
 print(f"\n결과: {ok_count}/{ok_count + len(fail)} 통과")
 sys.exit(1 if fail else 0)

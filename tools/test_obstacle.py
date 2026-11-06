@@ -57,7 +57,7 @@ j, t = ready_judge()
 out, t = feed(j, [("ok", 0, 1)], t0=t)
 check("멈춤 ③: 0 (아주 가까움) → 잠깐 멈춤", out[0][1] == ob.PAUSE)
 j, t = ready_judge()
-out, t = feed(j, [("ok", 5000, 1)], t0=t)
+out, t = feed(j, [("ok", 5001, 1)], t0=t)
 check("멈춤 ④: 뜻 모르는 큰 값은 달림 중에는 무시", out[0][1] == ob.RUN)
 j, t = ready_judge()
 out, t = feed(j, [("fail", None, 1)], t0=t)
@@ -96,8 +96,8 @@ check("치움 ⑥: 버린 읽기 0.06초(≤ 0.1초)는 이어서 셈", out[-1][
 j, t = ready_judge()
 feed(j, [("ok", 100, 1)], t0=t)
 t += 0.02
-out, t = feed(j, [("ok", 600, 30), ("ok", 5000, 1), ("ok", 600, 40)], t0=t)
-check("치움 ⑦: 뜻 모르는 값(> 800mm) → 출발 허락에서 뺌 · 1초 처음부터", all(o[1] == ob.PAUSE for o in out))
+out, t = feed(j, [("ok", 600, 30), ("ok", 5001, 1), ("ok", 600, 40)], t0=t)
+check("치움 ⑦: 뜻 모르는 값(> 5000mm) → 출발 허락에서 뺌 · 1초 처음부터", all(o[1] == ob.PAUSE for o in out))
 j, t = ready_judge()
 feed(j, [("ok", 100, 1)], t0=t)
 t += 0.02
@@ -121,7 +121,7 @@ f.pause(0.24)
 f.resume(10.24)                      # 10초 멈춤
 check("이어 하기 ①: 찾기 동작은 버리고 따라가기로", f.state == "follow" and f.search_used == 0.0, (f.state, f.search_used))
 check("이어 하기 ②: 마지막 방향 · 줄 놓침 기록은 남김", f.last_dir == "L" and len(f.losses) == 1, (f.last_dir, len(f.losses)))
-check("이어 하기 ③: 줄 놓침 기록 시각을 멈춘 시간만큼 뒤로 (10초 3번 규칙이 대기 시간으로 안 지워짐)",
+check("이어 하기 ③: 줄 놓침 통계 시각을 멈춘 시간만큼 뒤로",
       abs(f.losses[0] - 10.04) < 1e-6, f.losses[0])
 w, name, why = f.step("0110", 10.26)
 check("이어 하기 ④: 다시 앞으로 · dt 가 대기 시간을 포함하지 않음", name == "앞으로" and why is None and f.prev_t == 10.26, (name, why))
@@ -160,12 +160,12 @@ check("옆걸음 ⑤: 줄이 왼쪽에 있었어도 왼쪽부터", out[0][1] == 
 check("옆걸음 ⑥: 바깥 칸은 계속 찾고 · 가운데 칸 보이면 바로 따라가기", out[5][2].startswith("옆걸음") and out[7][2] == "오른쪽 완만"
       and out[-1][2] == "앞으로" and not any(o[3] for o in out), [o[2] for o in out[5:]])
 out = crab_run("0010", [("0000", 3), ("1111", 1)])
-check("옆걸음 ⑧: 중간에 1111 → 정지", out[-1][3] is not None and "1111" not in "" and "네 칸" in out[-1][3], out[-1][3])
+check("옆걸음 ⑧: 중간에 1111 → 즉시 정지선 확인", out[-1][1] == (0,0,0,0) and out[-1][3] is None and "정지선" in out[-1][2], out[-1][2])
 
 # 대기 진단은 출발 타이머와 상태를 바꾸지 않아야 한다.
 j, t = ready_judge()
 j.update("ok", 136, t)
-for value, expected in ((200, "이하"), (800, "남은"), (801, "초과"), (1500, "초과")):
+for value, expected in ((200, "이하"), (1258, "남은"), (5000, "남은"), (5001, "초과")):
     state, _, left = j.update("ok", value, t + 0.02)
     before = (j.state, j.clear_since, j.last_ok, j.mm)
     detail = j.wait_reason("ok", left)
@@ -173,6 +173,18 @@ for value, expected in ((200, "이하"), (800, "남은"), (801, "초과"), (1500
     check(f"대기 진단 {value}mm: 판단 상태 변경 없음", before == (j.state, j.clear_since, j.last_ok, j.mm))
     t += 0.02
 check("대기 진단: 섞인 읽기 버림 표시", "읽기 버림" in j.wait_reason("torn", None))
+
+# 실제 재출발 실패 기록의 거리와 기존 측정 범위에서 1초 연속 확인을 검증한다.
+for distance in (1258, 1292, 1479, 3145, 4743, 5000):
+    j, t = ready_judge()
+    feed(j, [("ok", 119, 1)], t0=t)
+    out, _ = feed(j, [("ok", distance, 60)], t0=t + .02)
+    cleared = next((o[0] - out[0][0] for o in out if o[1] == ob.CLEAR), None)
+    check(f"재현: {distance}mm 정상읽기1초 → 치워짐", cleared is not None and .98 <= cleared <= 1.02, cleared)
+j, t = ready_judge()
+feed(j, [("ok", 119, 1)], t0=t)
+out, _ = feed(j, [("ok", 65535, 70)], t0=t + .02)
+check("65535 같은 범위밖 값은 계속 재출발 불가", all(o[1] == ob.PAUSE for o in out))
 
 print(f"\n결과: {ok_count}/{ok_count + len(fail)} 통과")
 sys.exit(1 if fail else 0)

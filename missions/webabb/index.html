@@ -47,6 +47,16 @@
   .ov .stopmark { position:absolute; left:8px; top:8px; background:var(--stop); color:#fff; font-weight:800; font-size:1.3rem; padding:4px 12px; border-radius:6px; letter-spacing:.05em; }
   .vision { font-size:.8rem; color: var(--muted); text-align:center; overflow-wrap:anywhere; }
   .vision.bad { color: var(--warn); }
+  .stop-notice { background:var(--stop); color:#fff; border-radius:8px; padding:12px; text-align:center; font-size:1.05rem; font-weight:800; }
+  .detection-grid { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+  .detection { background:var(--panel); border:2px solid var(--line); border-radius:10px; padding:12px; display:grid; gap:5px; }
+  .detection strong { font-size:1.15rem; }
+  .detection small { color:var(--muted); }
+  .detection.detected { border-color:var(--stop); }
+  .detection.detected strong { color:#ff938d; }
+  .detection.weak, .detection.unknown { border-color:var(--warn); }
+  .detection.weak strong, .detection.unknown strong { color:var(--warn); }
+  .motion { background:var(--panel); border-radius:8px; padding:10px; font-size:.95rem; overflow-wrap:anywhere; }
   [hidden] { display:none !important; }
 </style>
 </head>
@@ -66,6 +76,12 @@
   <main id="main" hidden>
     <div class="wrap">
       <div class="cam" id="cam"><span id="camMsg">카메라 화면</span><span class="pill age" id="age" hidden></span></div>
+      <div class="stop-notice" id="stopSignNotice" role="status" aria-live="polite" hidden></div>
+      <div class="detection-grid" aria-label="사람과 STOP 인식 상태">
+        <div class="detection unknown" id="personDetection"><span>사람</span><strong>확인 중</strong><small>인식 결과 대기</small></div>
+        <div class="detection unknown" id="stopDetection"><span>STOP 표지판</span><strong>확인 중</strong><small>인식 결과 대기</small></div>
+      </div>
+      <div class="motion" id="motionInfo" role="status">주행 상태 확인 중</div>
       <div class="vision" id="visionInfo" hidden></div>
       <div class="msg" id="msg"></div>
       <div class="bb" id="bbRow" hidden><span class="pill" id="bb"></span> <span id="bbInfo"></span></div>
@@ -165,6 +181,10 @@
         (bb.dropped ? ` · 버린 장면 ${bb.dropped}` : "") + (bb.clock_ok ? "" : " · 시각 미확인");
     }
     const ln = s.line;
+    $("motionInfo").textContent = !s.controller ? "제어부 이상 · 주행 불가"
+      : s.locked ? "정지 실패 · 재시도 중"
+      : s.moving ? "주행 중 · " + (ln?.active ? ln.action : s.move)
+      : "정지 중 · " + (ln?.active ? ln.action : ln?.reason || s.reason || "출발 명령 대기");
     if (ln) {
       const dots = ln.pattern ? [...ln.pattern].map(c => c === "1" ? "●" : "○").join("") : "····";
       const ob = ln.obstacle || {};
@@ -183,11 +203,13 @@
 
   function lost(why) {
     releaseAll(why); haveSeat = false; clearInterval(statusTimer);
+    showDetection(null, "연결 끊김");
     $("cam").querySelector("img")?.remove(); $("camMsg").hidden = false;
     claim();
   }
 
   function startCamera() {
+    showDetection(null, !cfg.camera ? "카메라 꺼짐" : !cfg.vision ? "인식 꺼짐" : "인식 준비 중");
     if (!cfg.camera) { $("camMsg").textContent = "카메라 꺼짐 (--no-camera)"; return; }
     $("cam").querySelector("img")?.remove();
     const img = new Image();
@@ -204,6 +226,11 @@
                   "like": "엄지척 (빠르게)", "peace": "브이 (사진)", "no_gesture": "그냥 손" };
   const VCOLOR = { "person": "#e5534b", "stop sign": "#ff7b72", "palm": "#4cc3a0", "fist": "#f0b45a",
                    "like": "#58a6ff", "peace": "#d2a8ff", "no_gesture": "#8b949e" };
+  function visionName(label) {
+    if (cfg.gesture_start_stop_only && label === "like") return "엄지척 (명령 없음)";
+    if (cfg.gesture_start_stop_only && label === "peace") return "브이 (명령 없음)";
+    return VNAME[label] || label;
+  }
   let visionTimer = null, lastGesture = null;
   const GSAY = { start: "손 모양 보 → 라인 따라가기 출발", stop: "손 모양 주먹 → 멈춤", faster: "손 모양 엄지척 → 빠르게", photo: "손 모양 브이 → 사진 저장" };
   function onGesture(g) {   // 지시서 08 — 같은 명령은 한 번만 (id)
@@ -221,21 +248,56 @@
     clearInterval(visionTimer);
     visionTimer = setInterval(pollVision, 200);
   }
+  function showStopSignNotice(v) {
+    const notice = $("stopSignNotice");
+    const signs = v && v.enabled && v.ready && !v.stale && !v.error
+      ? (v.items || []).filter(d => d.label === "stop sign" && d.conf >= 0.65) : [];
+    notice.hidden = signs.length === 0;
+    notice.textContent = signs.length
+      ? `STOP 표지판을 봤어요 · 확신도 ${Math.round(Math.max(...signs.map(d => d.conf)) * 100)}%` : "";
+  }
+  function showDetection(v, fallback = "통신 끊김") {
+    showStopSignNotice(v);
+    const problem = !v ? fallback : !v.enabled ? "인식 꺼짐" : v.error ? "인식 오류"
+      : !v.ready ? "인식 준비 중" : v.stale ? "인식 결과가 오래됨" : "";
+    for (const [id, label] of [["personDetection", "person"], ["stopDetection", "stop sign"]]) {
+      const card = $(id), state = card.querySelector("strong"), detail = card.querySelector("small");
+      if (problem) {
+        card.className = "detection unknown"; state.textContent = "확인 불가"; detail.textContent = problem;
+        continue;
+      }
+      const scores = (v.items || []).filter(d => d.label === label).map(d => d.conf);
+      const score = scores.length ? Math.max(...scores) : null;
+      card.className = "detection" + (score === null ? "" : score >= 0.65 ? " detected" : " weak");
+      state.textContent = score === null ? "감지 안 됨" : score >= 0.65 ? "감지됨" : "약하게 감지";
+      detail.textContent = score === null ? "지금 화면에서 찾지 못함"
+        : `확신도 ${Math.round(score * 100)}%` + (score < 0.65 ? " · 정지 기준 미달" : " · 정지 기준 65% 이상");
+    }
+    if (problem) $("cam").querySelector(".ov")?.replaceChildren();
+  }
+  let visionBusy = false;
   async function pollVision() {
-    if (!haveSeat) return;
+    if (!haveSeat || visionBusy) return;
+    visionBusy = true;
+    const abort = new AbortController();
+    const timeout = setTimeout(() => abort.abort(), 1000);
     let v;
     try {
-      const r = await fetch("/api/vision", { credentials: "same-origin", cache: "no-store" });
-      if (!r.ok) return;
+      const r = await fetch("/api/vision", { credentials: "same-origin", cache: "no-store", signal: abort.signal });
+      if (!r.ok) { showDetection(null); $("visionInfo").textContent = "인식 상태 확인 불가 · 통신 오류"; return; }
       v = await r.json();
-    } catch { return; }
+    } catch { showDetection(null); $("visionInfo").textContent = "인식 상태 확인 불가 · 통신 끊김"; return; }
+    finally { clearTimeout(timeout); visionBusy = false; }
+    if (!haveSeat) return;
+    showDetection(v);
     const ov = $("cam").querySelector(".ov"), info = $("visionInfo");
     if (!ov) return;
-    onGesture(v.gesture);
     ov.textContent = "";
+    if (v.error) { info.textContent = "인식 오류: " + v.error; info.className = "vision bad"; return; }
     if (!v.enabled) { info.textContent = "인식 꺼짐"; info.className = "vision"; return; }
     if (!v.ready) { info.textContent = v.error ? "인식 오류: " + v.error : "인식 준비 중…"; info.className = "vision bad"; return; }
     if (v.stale) { info.textContent = `인식 멈춤 — ${v.age.toFixed(1)}초 전 결과`; info.className = "vision bad"; return; }
+    onGesture(v.gesture);
     for (const d of v.items) {
       const [x, y, w, h] = d.box, c = VCOLOR[d.label] || "#fff";
       const b = document.createElement("div");
@@ -243,12 +305,12 @@
       b.style.cssText = `left:${x * 100}%;top:${y * 100}%;width:${w * 100}%;height:${h * 100}%;border-color:${c}`;
       const t = document.createElement("span");
       t.style.background = c;
-      t.textContent = `${VNAME[d.label] || d.label} ${d.conf.toFixed(2)}`;
+      t.textContent = `${visionName(d.label)} ${d.conf.toFixed(2)}`;
       b.appendChild(t);
       ov.appendChild(b);
     }
     if (v.stop) { const s = document.createElement("div"); s.className = "stopmark"; s.textContent = "STOP"; ov.appendChild(s); }
-    const found = v.items.map(d => `${VNAME[d.label] || d.label} ${d.conf.toFixed(2)}`).join(" · ") || "찾은 것 없음";
+    const found = v.items.map(d => `${visionName(d.label)} ${d.conf.toFixed(2)}`).join(" · ") || "찾은 것 없음";
     info.textContent = `인식: ${found} · ${v.rate.toFixed(1)}번/초 · ${v.ms}ms · ${v.age.toFixed(1)}초 전`;
     info.className = "vision";
   }

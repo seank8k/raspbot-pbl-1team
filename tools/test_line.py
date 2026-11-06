@@ -66,7 +66,7 @@ check("켤 때: None 출발 안 함", not f.start(None)[0])
 
 # 3) 16가지 모양 (따라가기 상태 · 직전 동작 = 앞)
 expect = {"0110": "앞", "0100": "왼쪽완만", "0010": "오른쪽완만", "1000": "왼쪽세게", "0001": "오른쪽세게",
-          "1100": "앞", "1110": "앞", "0011": "앞", "0111": "앞", "1111": "앞",
+          "1100": "앞", "1110": "앞", "0011": "앞", "0111": "앞", "1111": "정지",
           "1001": "앞", "1010": "앞", "0101": "앞", "1011": "앞", "1101": "앞", "0000": "제자리왼"}  # 0000 시험은 마지막 감지가 왼쪽
 for p, k in expect.items():
     f = line.LineFollower(S)
@@ -136,26 +136,28 @@ out, t = run(f, [("0000", 120)], t0=t)
 stop_at = next((tt - out[0][0] for tt, w, n, why in out if why), None)
 check("0.5초 안정 뒤 새 줄 놓침 → 다시 1.0초", stop_at is not None and 0.96 <= stop_at <= 1.06, stop_at)
 
-# 9) 10초 안에 줄 놓침 3번 → 정지
+# 9) 직각 코너마다 복구 성공: 10초 안 3번이어도 횟수로 정지하지 않음
 f = line.LineFollower(S)
 seq = [("0110", 3), ("1000", 2)]
 for _ in range(3):
     seq += [("0000", 10), ("0110", 30), ("1000", 2)]
 out, t = run(f, seq)
 whys = [why for _, _, _, why in out if why]
-check("10초 안에 줄 놓침 3번 → 정지", whys and "3번" in whys[0], whys[:1])
+check("10초 안에 줄 놓침 3번 뒤 모두 복구 → 횟수로 정지하지 않음", not whys and len(f.losses) == 3 and f.state == "follow", (whys, len(f.losses)))
 
-# 10) 1111: 0.3초 앞으로 → 정지 / 0.3초 안에 바뀌면 따라가기
+# 10) 1111: 즉시 정지 · 최소 1초 · 연속 1초면 마지막 정지선
 f = line.LineFollower(S)
-_, t = run(f, [("0110", 3)])
-t0 = t
-out, t = run(f, [("1111", 30)], t0=t)
-stop_at = next((tt - t0 for tt, w, n, why in out if why), None)
-check("1111 계속 → 약 0.3초에 정지", stop_at is not None and 0.28 <= stop_at <= 0.34, stop_at)
-check("1111 동안은 앞으로", kind(out[0][1]) == "앞")
+f.step("0110", 0.0)
+w, _, why = f.step("1111", 1.0)
+check("1111 최초 감지 즉시 정지 · 라인 판단은 확인 중", w == line.ZERO and why is None)
+w, _, why = f.step("1111", 1.99)
+check("1111 연속 1초 전에는 도착 확정 안 함", w == line.ZERO and why is None)
+w, _, why = f.step("1111", 2.0)
+check("1111 연속 1초 → 마지막 정지선 · 라인 종료", w == line.ZERO and why == "마지막 정지선: 1111 연속 1초")
 f = line.LineFollower(S)
-out, t = run(f, [("0110", 3), ("1111", 10), ("0110", 3)])
-check("1111 0.2초 뒤 0110 → 계속 따라감", kind(out[-1][1]) == "앞" and not any(x[3] for x in out))
+f.step("1111", 1.0)
+out = [f.step("0110", t) for t in (1.2, 1.99, 2.0)]
+check("1111이 풀려도 최소 1초는 멈추고 그 뒤 현재 줄로 복귀", out[0][0] == line.ZERO and out[1][0] == line.ZERO and out[2][0] == (S,)*4 and out[2][2] is None)
 
 # 11) 이상한 모양: 직전 동작 0.1초 유지 → 정지
 f = line.LineFollower(S)
@@ -288,6 +290,82 @@ for p in expect:
     g.step("0100", 0.02)
     mx = max(mx, max(abs(v) for v in g.step(p, 0.04)[0]))
 check("어떤 모양에서도 바퀴 값 ≤ 속도(80)", mx <= 80, mx)
+
+# 코너 직후 반대쪽 크게 꺾임 = 코너 아님 (조원 결정 2026-11-06 · 기록 webabb-20261106-123136 그대로)
+f = line.LineFollower(S)
+out, t = run(f, [("0110", 3), ("1110", 1), ("0000", 5), ("0000", 25), ("1000", 2), ("1100", 1), ("0110", 6), ("0111", 1)])
+w = out[-1][1]
+check("가드: 왼쪽 코너 직후 0111 → 오른쪽 세게만 (진입 전진 · 오른쪽 회전 안 함)", w == (60, 60, 0, 0) and f.state == "follow" and "코너 아님" in out[-1][2], (w, out[-1][2]))
+out, t = run(f, [("0011", 2), ("0010", 1), ("0110", 3)], t0=t)
+check("가드: 그 뒤 따라가기로 돌아옴 · 정지 없음", out[-1][1] == (60, 60, 60, 60) and all(o[3] is None for o in out), [o[2] for o in out])
+f = line.LineFollower(S)
+out, t = run(f, [("0110", 3), ("1110", 1), ("0000", 30), ("1000", 2), ("0110", 3), ("0110", 55), ("0111", 1)])
+check("가드: 1.0초가 지나면 0111은 지금처럼 오른쪽 코너 동작", f.state == "pivot_entry" and out[-1][1] == (40, 40, 40, 40), (f.state, out[-1][1]))
+f = line.LineFollower(S)
+out, t = run(f, [("0110", 3), ("1110", 1), ("0000", 30), ("1000", 2), ("0110", 3), ("1110", 1)])
+check("가드: 왼쪽 코너 직후 같은 쪽(1110)은 그대로 코너 동작", f.state == "pivot_entry", f.state)
+f = line.LineFollower(S)
+out, t = run(f, [("0110", 3), ("0111", 1), ("0000", 30), ("0001", 2), ("0110", 3), ("1100", 1)])
+check("가드: 오른쪽 코너 직후 1100도 같은 규칙 (왼쪽 세게만)", out[-1][1] == (0, 0, 60, 60) and f.state == "follow", (out[-1][1], f.state))
+f = line.LineFollower(S)
+out, t = run(f, [("0110", 3), ("0111", 1)])
+check("가드: 코너를 돈 적이 없으면 0111은 지금처럼 코너 동작", f.state == "pivot_entry", f.state)
+
+# 짧은 줄 놓침은 안 셈 (2-가 · 2026-11-06 다시 넣음 · 기록 webabb-20261106-131229 그대로)
+f = line.LineFollower(S)
+seq = [("0110", 3)]
+for _ in range(4):
+    seq += [("0100", 1), ("0000", 1), ("1000", 1), ("0000", 1), ("0100", 1), ("0110", 12)]
+    seq += [("0010", 2), ("0000", 1), ("0001", 1), ("0000", 1), ("0001", 1), ("0010", 1), ("0110", 12)]
+out, t = run(f, seq)
+check("2-가: 좌우로 흔들리며 0.02~0.04초 0000 → 줄 놓침 안 셈 · 정지 없음", all(o[3] is None for o in out) and len(f.losses) == 0, (list(f.losses), [o[3] for o in out if o[3]]))
+f = line.LineFollower(S)
+out, t = run(f, [("0110", 3), ("0001", 1), ("0000", 4)])
+check("2-가: 찾기 0.06초까지는 아직 안 셈", len(f.losses) == 0, list(f.losses))
+lost_at = out[4][0]
+out, t = run(f, [("0000", 3)], t0=t)
+check("2-가: 찾기 0.1초 넘으면 1번 · 기록 시각은 놓친 순간", len(f.losses) == 1 and abs(f.losses[0] - lost_at) < 1e-9, (list(f.losses), lost_at))
+f = line.LineFollower(S)
+f.losses.extend([0.0, 0.5])
+out, t = run(f, [("0110", 3), ("0001", 1), ("0000", 5)], t0=1.0)
+check("2-가: 3번째도 0.1초 전에는 찾는 중", out[-1][3] is None, out[-1][2])
+out, t = run(f, [("0000", 3)], t0=t)
+check("3번째가 0.1초를 넘어도 찾기 계속 · 횟수는 통계만", out[-1][3] is None and len(f.losses) == 3 and f.state == "search", (out[-1][3], len(f.losses)))
+out, t = run(f, [("0000", 60)], t0=t)
+check("횟수 제한을 빼도 1초 동안 복구 못 하면 정지", out[-1][3] == "줄을 못 찾음 (회전 1.0초)", out[-1][3])
+
+# 2026-11-06 리뷰 재현: 반대쪽 감지를 버리지 않고 시간 한계는 유지
+for initial, opposite, expected in (("1000", "0001", "제자리오"), ("0001", "1000", "제자리왼"),
+                                     ("1000", "0111", "제자리오"), ("0001", "1110", "제자리왼")):
+    f = line.LineFollower(S)
+    _, t = run(f, [(initial, 1), ("0000", 20)])
+    before = f.search_used
+    w, _, why = f.step(opposite, t)
+    check(f"A 복구: {initial} 찾기 중 {opposite} → {expected}",
+          kind(w) == expected and why is None and f.state == "search" and f.search_used >= before)
+    out, _ = run(f, [("0000", 70)], t0=t + .02)
+    stop = next((tt for tt, _, _, why in out if why), None)
+    check(f"A 복구: {opposite} 방향 전환으로 1초 예산이 새로 생기지 않음", stop is not None and stop < 1.1)
+
+# 40ms 찾기가 여러 번 있어도 횟수는 0. 합계 1초 제한은 별도 유지.
+f = line.LineFollower(S)
+seq = [("0001", 1), ("0110", 1)]
+for _ in range(7):
+    seq += [("0000", 2), ("0110", 15)]
+out, t = run(f, seq)
+check("연속 40ms 찾기 반복: 놓침 횟수 0 · 찾기 시간은 누적", len(f.losses) == 0 and f.search_used > .1 and not any(o[3] for o in out), (len(f.losses), f.search_used))
+for _ in range(30):
+    out, t = run(f, [("0000", 2), ("0110", 15)], t0=t)
+    if f.reason:
+        break
+check("짧은 찾기를 반복해도 합계 1초에는 정지", f.reason == "줄을 못 찾음 (회전 1.0초)", f.reason)
+
+f = line.LineFollower(S)
+f.step("0001", 0.0)
+f.step("0000", .02)
+f.step("0000", .10)
+f.step("0110", .14)
+check("회복하는 읽기에서 0.1초를 넘겨도 놓침을 빠뜨리지 않음", len(f.losses) == 1 and f.losses[0] == .02)
 
 print(f"\n결과: {ok_count}/{ok_count + len(fail)} 통과")
 sys.exit(1 if fail else 0)

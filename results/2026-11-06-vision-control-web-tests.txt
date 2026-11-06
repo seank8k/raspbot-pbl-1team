@@ -1,0 +1,60 @@
+== test_vision_web.py
+PASS 자리 없이 /api/vision → 거부  [403]
+PASS 설정에 vision 켜짐  [True]
+PASS 인식 준비 끝 (15초 안)  [None]
+PASS 인식 결과가 늘 1초 안 (멈춤 없음)  [최대 0.29초]
+PASS 인식 횟수 초당 5번 이상  [중간 10.0번/초]
+PASS 제어 한 바퀴 최대 0.1초 안 (인식이 제어를 안 막음)  [0.025]
+PASS 감시 개입 0  [0]
+PASS 영상 멈춤 없음  [0.02]
+인식 한 번 96ms(중간) · 찾은 것(조회 횟수) {} · STOP 표시 0번
+
+결과: 8/8 통과
+
+exit 0
+
+== test_sight_web.py
+FAIL 1 라인 켬 · 아무것도 없음 → 달림
+PASS 2 사람 → 0.4초 안에 멈춤 (연속 2번 · 웹 왕복 포함)  [0.0037466660000973206]
+FAIL 2 멈춘 중에도 라인 켜짐 · 이유 「사람」  [꺼짐]
+PASS 3 사람이 계속 보이면 2초 뒤에도 계속 멈춤
+FAIL 4 사람이 사라지면 1.0~1.3초 뒤 다시 출발  [None]
+FAIL 5 STOP 표지판 → 멈춤  [꺼짐]
+FAIL 6 표지판이 계속 보여도 약 3초 뒤 출발  [None]
+FAIL 7 출발 뒤 5초 동안은 같은 표지판에 또 안 멈춤
+FAIL 8 인식이 멈춘 상태에서 라인 켜기 → 출발 안 함 「인식 준비 중」  [손 뗌 · 정지]
+FAIL 9 달리는 중 인식 멈춤 → 「사람 없음」으로 안 보고 멈춤  [꺼짐]
+FAIL 10 인식이 돌아오면 다시 출발  [None]
+PASS 11 사람 + 장애물 → 멈춤
+FAIL 12 사람만 사라짐 · 장애물은 그대로 → 계속 멈춤
+FAIL 13 장애물도 치우면 1초 뒤 출발  [None]
+PASS 14 사람 멈춤 중 비상정지 → 사람이 사라져도 안 움직임 · 라인 꺼짐  [손 뗌 · 정지]
+FAIL 15 수동 앞으로는 사람이 보여도 움직임 (라인 중에만 적용)
+
+결과: 4/16 통과
+
+exit 1
+
+== test_start_stop_web.py
+Traceback (most recent call last):
+  File "/home/pi/raspbot/tools/test_start_stop_web.py", line 69, in <module>
+    old = (call("/api/vision").get("gesture") or {}).get("id", 0)
+           ~~~~^^^^^^^^^^^^^^^
+  File "/home/pi/raspbot/tools/test_start_stop_web.py", line 21, in call
+    with opener.open(req, timeout=3) as r:
+         ~~~~~~~~~~~^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.13/urllib/request.py", line 495, in open
+    response = meth(req, response)
+  File "/usr/lib/python3.13/urllib/request.py", line 604, in http_response
+    response = self.parent.error(
+        'http', request, response, code, msg, hdrs)
+  File "/usr/lib/python3.13/urllib/request.py", line 533, in error
+    return self._call_chain(*args)
+           ~~~~~~~~~~~~~~~~^^^^^^^
+  File "/usr/lib/python3.13/urllib/request.py", line 466, in _call_chain
+    result = func(*args)
+  File "/usr/lib/python3.13/urllib/request.py", line 613, in http_error_default
+    raise HTTPError(req.full_url, code, msg, hdrs, fp)
+urllib.error.HTTPError: HTTP Error 403: FORBIDDEN
+
+exit 1

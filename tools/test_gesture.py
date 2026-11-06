@@ -83,5 +83,17 @@ s.skip_person(3.0)
 h, why, _ = s.update(dict(enabled=True, ready=True, stale=True, error=None, t_capture=1, items=[]), 0.5)
 check("⑭ 사람 멈춤을 쉬는 중에도 인식 멈춤이면 멈춤", h and "인식 멈춤" in why, why)
 
+# 출발/정지 전용 모드: 출발 직후 주먹도 3초 대기 없이 처리한다.
+out = feed(gesture.GestureJudge(start_stop_only=True), [(PALM, 5), (FIST, 5)])
+check("전용 ①: 보에서 바로 주먹 → 대기/손 내림 없이 정지", out == [(0.4, "start"), (0.9, "stop")], out)
+out = feed(gesture.GestureJudge(start_stop_only=True), [(LIKE, 40), (PEACE, 40)])
+check("전용 ②: 엄지척·브이는 명령 아님", not out, out)
+out = feed(gesture.GestureJudge(start_stop_only=True), [([("like", .99), ("palm", .9)], 5)])
+check("전용 ③: 명령 아닌 손의 점수가 높아도 보 출발 가능", out == [(0.4, "start")], out)
+out = feed(gesture.GestureJudge(start_stop_only=True), [(PALM, 5), (FIST, 30)])
+check("전용 ④: 주먹을 계속 들면 정지는 한 번만", [c for _, c in out] == ["start", "stop"], out)
+out = feed(gesture.GestureJudge(start_stop_only=True), [(FIST, 5), ([], 31), (PALM, 5)])
+check("전용 ⑤: 주먹 정지 뒤 손 내리고 보 → 다시 출발", [c for _, c in out] == ["stop", "start"], out)
+
 print(f"\n결과: {ok_count}/{ok_count + len(fail)} 통과")
 sys.exit(1 if fail else 0)

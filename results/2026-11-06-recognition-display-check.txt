@@ -1,0 +1,2 @@
+JavaScript syntax PASS
+PASS: 9 recognition display scenarios

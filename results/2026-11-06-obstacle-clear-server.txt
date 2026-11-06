@@ -1,0 +1,4 @@
+MAX_KNOWN 5000
+PID 3435
+LOG results/webabb-20261106-154922.log
+HTTP200; STOP notice remains present
